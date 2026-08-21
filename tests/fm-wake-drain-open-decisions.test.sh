@@ -164,19 +164,21 @@ test_deferred_presentation_preserves_nondecision_wakes() {
   state="$dir/state"
   out="$dir/drain.out"
   printf 'needs-decision [key=route]: pick the rollout route\n' > "$state/task-deferred.status"
-  printf 'resolved [key=route]: chose the safe route\n' >> "$state/task-deferred.status"
+  printf 'resolved [key=route]: authoritative route closure\n' >> "$state/task-deferred.status"
   append_wake "$state" signal task-deferred.status \
-    "resolved [key=route]: chose the safe route" || fail "decision signal append failed"
+    "signal display: resolved [key=route]: untrusted payload prose" || fail "signal append failed"
   append_wake "$state" check custom-check \
     "check: custom-check: blocked: operator action required" || fail "custom check append failed"
 
   FM_WAKE_DEFER_DECISION_PRESENTATION=1 FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" \
     || fail "deferred drain failed"
 
-  grep "$(printf '\tcheck\tcustom-check\tcheck: custom-check: blocked: operator action required')" "$out" >/dev/null \
+  grep -F "$(printf '\tcheck\tcustom-check\tcheck: custom-check: blocked: operator action required')" "$out" >/dev/null \
     || fail "deferred presentation discarded a non-decision check containing blocked: $(cat "$out")"
-  if grep -F 'resolved [key=route]: chose the safe route' "$out" >/dev/null; then
-    fail "deferred presentation retained resolved decision evidence: $(cat "$out")"
+  grep -F "$(printf '\tsignal\ttask-deferred.status\tsignal display: resolved [key=route]: untrusted payload prose')" "$out" >/dev/null \
+    || fail "deferred presentation discarded a signal based on payload prose: $(cat "$out")"
+  if grep -F 'resolved [key=route]: authoritative route closure' "$out" >/dev/null; then
+    fail "deferred presentation retained authoritative resolved decision evidence: $(cat "$out")"
   fi
   if grep -F 'OPEN DECISIONS' "$out" >/dev/null; then
     fail "deferred presentation printed the decision section: $(cat "$out")"

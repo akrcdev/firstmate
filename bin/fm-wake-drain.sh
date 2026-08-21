@@ -243,22 +243,6 @@ EOF
   printf 'RECORD DIVERGENCE: reconcile each one - record the captain'"'"'s own words with bin/fm-captain-hold.sh answer <task> --decision-file <path>, or re-open the status decision when that resolution was not the captain'"'"'s word.\n' || return 1
 }
 
-print_deferred_raw_rows() {
-  local rows=$1 epoch seq kind key payload
-  while IFS=$(printf '\t') read -r epoch seq kind key payload; do
-    if [ "$kind" = signal ] && fm_wake_status_key_map "$key" \
-      && printf '%s\n' "$payload" | awk '
-        /(^|: )(needs-decision|blocked|resolved)( \[key=[^]]+\])?:/ { found=1 }
-        END { exit !found }
-      '; then
-      continue
-    fi
-    printf '%s\t%s\t%s\t%s\t%s\n' "$epoch" "$seq" "$kind" "$key" "$payload" || return 1
-  done <<EOF
-$rows
-EOF
-}
-
 print_status_sections() {
   local snapshot=${1:-} fully_presented=${2:-} acknowledged
   if [ -z "$snapshot" ]; then snapshot=$(status_presentation_snapshot "$STATE") || return 1; fi
@@ -408,11 +392,7 @@ case "${FM_WAKE_DRAIN_TEST_DELAY_BEFORE_COMMIT:-0}" in
   *) sleep "$FM_WAKE_DRAIN_TEST_DELAY_BEFORE_COMMIT" ;;
 esac
 if [ -n "$RAW_ROWS" ]; then
-  if [ "${FM_WAKE_DEFER_DECISION_PRESENTATION:-0}" = 1 ]; then
-    print_deferred_raw_rows "$RAW_ROWS" || exit "$?"
-  else
-    printf '%s\n' "$RAW_ROWS" || exit "$?"
-  fi
+  printf '%s\n' "$RAW_ROWS" || exit "$?"
 fi
 fm_recovery_marker_snapshot "$RECOVERY_MARKER" || exit 1
 RECOVERY_MARKER_TOKEN=$FM_RECOVERY_MARKER_TOKEN

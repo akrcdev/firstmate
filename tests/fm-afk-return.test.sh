@@ -48,8 +48,6 @@ if [ -s "$file" ]; then
     awk -F '\t' '
       /^OPEN DECISIONS \(still open,/ { exit }
       /^wake annotation: .*: [A-Za-z0-9_-][A-Za-z0-9._-]*[.]status: (needs-decision|blocked|resolved)( \[key=[^]]+\])?:/ { next }
-      $3 == "signal" && $4 ~ /^[A-Za-z0-9_-][A-Za-z0-9._-]*[.](status|turn-ended)$/ \
-        && $5 ~ /(^|: )(needs-decision|blocked|resolved)( \[key=[^]]+\])?:/ { next }
       { print }
     ' "$file"
   else
