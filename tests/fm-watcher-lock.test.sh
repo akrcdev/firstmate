@@ -69,7 +69,7 @@ test_singleton_start() {
 }
 
 test_stale_watch_lock_reclaimed() {
-  local dir state fakebin out dead_pid pid live lock_pid i
+  local dir state fakebin out dead_pid pid
   dir=$(make_case stale-lock)
   state="$dir/state"
   fakebin="$dir/fakebin"
@@ -82,22 +82,10 @@ test_stale_watch_lock_reclaimed() {
   printf '%s\n' "$dead_pid" > "$state/.watch.lock/pid"
   PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_POLL=5 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
   pid=$!
-  i=0
-  live=0
-  lock_pid=
-  while [ "$i" -lt 50 ]; do
-    live=0
-    is_live_non_zombie "$pid" && live=1
-    lock_pid=$(cat "$state/.watch.lock/pid" 2>/dev/null || true)
-    [ "$live" -eq 1 ] && [ "$lock_pid" != "$dead_pid" ] && break
-    sleep 0.1
-    i=$((i + 1))
-  done
-  [ "$live" -eq 1 ] || fail "watcher did not reclaim stale lock and stay alive"
-  [ "$lock_pid" != "$dead_pid" ] || fail "stale watch lock pid was not replaced"
-  kill "$pid" 2>/dev/null || true
-  wait "$pid" 2>/dev/null || true
-  pass "killed watcher stale lock is reclaimed"
+  wait_for_exit "$pid" 80 || fail "watcher did not surface stale-lock recovery"
+  grep -F 'check: rearm-resurface' "$out" >/dev/null \
+    || fail "stale watcher loss was reclaimed without an actionable warning: $(cat "$out")"
+  pass "killed watcher stale lock is reclaimed with an actionable warning"
 }
 
 test_live_stale_watch_lock_is_actionable() {
@@ -421,7 +409,7 @@ test_lock_paused_mid_acquire_claim_fails_during_steal() {
 }
 
 test_watch_restart_rejects_reused_pid() {
-  local dir state fakebin out live pid i
+  local dir state fakebin out live pid
   dir=$(make_case restart-reused-pid)
   state="$dir/state"
   fakebin="$dir/fakebin"
@@ -436,24 +424,13 @@ test_watch_restart_rejects_reused_pid() {
   printf '%s\n' "stale watcher identity" > "$state/.watch.lock/pid-identity"
   PATH="$fakebin:$PATH" FM_HOME="$dir" FM_POLL=5 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH_ARM" --restart > "$out" &
   pid=$!
-  i=0
-  while [ "$i" -lt 80 ]; do
-    grep -qF 'watcher: started pid=' "$out" 2>/dev/null && break
-    sleep 0.1
-    i=$((i + 1))
-  done
-  grep -qF 'watcher: started pid=' "$out" \
-    || fail "restart did not recover after replacing a reused-pid lock: $(cat "$out")"
-  is_live_non_zombie "$pid" || fail "restart exited only to announce empty recovery"
-  ! grep -F 'check: rearm-resurface' "$out" >/dev/null \
-    || fail "restart manufactured a wake from empty reused-pid evidence: $(cat "$out")"
+  wait_for_exit "$pid" 80 || fail "restart did not surface reused-pid watcher loss"
+  grep -F 'check: rearm-resurface' "$out" >/dev/null \
+    || fail "restart reclaimed reused-pid watcher loss without an actionable warning: $(cat "$out")"
   is_live_non_zombie "$live" || fail "restart killed a reused unrelated pid"
-  printf 'done: real wake after reused-pid restart\n' > "$state/reused-restart.status"
-  wait_for_exit "$pid" 80 || fail "reused-pid restart lost the next real wake"
-  grep -q '^signal:' "$out" || fail "reused-pid restart did not deliver the next real wake: $(cat "$out")"
   kill "$live" 2>/dev/null || true
   wait "$live" 2>/dev/null || true
-  pass "watch restart recovers quietly without signaling a reused pid or losing real work"
+  pass "watch restart reports reused-pid watcher loss without signaling that pid"
 }
 
 test_watch_restart_attaches_to_healthy_peer() {
@@ -643,10 +620,8 @@ test_attached_arm_signal_is_recorded_in_cycle_ledger() {
 }
 
 test_arm_starts_and_self_heals() {
-  # Arming with no confirmable watcher must FORK one and confirm it live + fresh
-  # before reporting 'started' - whether the lock is empty (clean start) or held
-  # by a dead pid with a fresh-looking leftover beacon (self-heal). It must never
-  # report 'healthy' off a dead pid. One row per pre-state, one assertion block.
+  # Arming with no lock must fork and confirm a live watcher before reporting
+  # started. A dead watcher lock is reclaimed but remains an actionable loss.
   local row dir state fakebin armout armpid i lock_pid dead_pid
   for row in clean dead-pid; do
     dir=$(make_case "arm-$row")
@@ -666,6 +641,12 @@ test_arm_starts_and_self_heals() {
     fi
     PATH="$fakebin:$PATH" FM_HOME="$dir" FM_POLL=5 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH_ARM" > "$armout" &
     armpid=$!
+    if [ "$row" = dead-pid ]; then
+      wait_for_exit "$armpid" 80 || fail "arm did not surface dead-pid watcher loss"
+      grep -F 'check: rearm-resurface' "$armout" >/dev/null \
+        || fail "arm reclaimed a dead-pid watcher without an actionable warning: $(cat "$armout")"
+      continue
+    fi
     i=0
     while [ "$i" -lt 80 ]; do
       grep -qF 'watcher: started pid=' "$armout" 2>/dev/null && break
@@ -682,7 +663,7 @@ test_arm_starts_and_self_heals() {
     kill "$armpid" "$lock_pid" 2>/dev/null || true
     wait "$armpid" 2>/dev/null || true
   done
-  pass "arm starts cleanly and silently recovers an empty dead-pid lock"
+  pass "arm distinguishes a clean start from actionable dead-watcher recovery"
 }
 
 test_arm_hup_cleans_child_and_temp_output() {

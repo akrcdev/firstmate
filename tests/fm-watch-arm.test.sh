@@ -138,10 +138,11 @@ drain_ack_pair() {  # <drain-stderr>
   printf '%s\t%s\n' "$sequence" "$generation"
 }
 
-start_rearm_arm() {  # <home> <state> <fakebin> <arm-out> [predecessor-arm-pid]
-  local home=$1 state=$2 fakebin=$3 armout=$4 predecessor=${5:-} i
+start_rearm_arm() {  # <home> <state> <fakebin> <arm-out> [predecessor-arm-pid] [extension-owner]
+  local home=$1 state=$2 fakebin=$3 armout=$4 predecessor=${5:-} owner=${6:-} i
   PATH="$fakebin:$PATH" FM_HOME="$home" FM_STATE_OVERRIDE="$state" \
     FM_POLL=1 FM_SIGNAL_GRACE=0 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 \
+    FM_WATCH_EXTENSION_OWNER="$owner" \
     FM_WATCH_PREDECESSOR_ARM_PID="$predecessor" \
     "$WATCH_ARM" --restart > "$armout" &
   ARM_PID=$!
@@ -325,7 +326,7 @@ test_rearm_resurfaces_durable_queue_and_remote_open_decision() {
   # is already known and must not manufacture an empty recovery turn.
   kill "$ARM_PID" 2>/dev/null || true
   wait "$ARM_PID" 2>/dev/null || true
-  start_rearm_arm "$home" "$state" "$fakebin" "$dir/decision-only-arm.out"
+  start_rearm_arm "$home" "$state" "$fakebin" "$dir/decision-only-arm.out" "" pi
   sleep 1.2
   is_live_non_zombie "$ARM_PID" || fail "empty re-arm exited only to repeat an already-known decision"
   ! grep -F 'check: rearm-resurface' "$dir/decision-only-arm.out" >/dev/null \
@@ -387,15 +388,11 @@ test_marker_publish_failure_retains_recovery_evidence() {
 
   rmdir "$state/.watcher-down"
   armout="$dir/recovery-arm.out"
-  start_rearm_arm "$home" "$state" "$fakebin" "$armout"
-  sleep 1.2
-  is_live_non_zombie "$ARM_PID" || fail "stale-lock recovery could not resume supervision"
-  ! grep -F 'check: rearm-resurface' "$armout" >/dev/null \
-    || fail "empty stale-lock recovery emitted a synthetic wake: $(cat "$armout")"
-  printf 'done: real wake after stale-lock recovery\n' > "$state/stale-lock-recovered.status"
-  wait_for_exit "$ARM_PID" 80 || fail "stale-lock recovery did not preserve later actionable delivery"
-  grep -q '^signal:' "$armout" || fail "stale-lock recovery lost the later real wake: $(cat "$armout")"
-  pass "watch-arm: marker publication failure recovers silently and preserves real delivery"
+  start_rearm_arm "$home" "$state" "$fakebin" "$armout" "" pi
+  wait_for_exit "$ARM_PID" 80 || fail "stale-lock recovery did not surface watcher loss"
+  grep -F 'check: rearm-resurface' "$armout" >/dev/null \
+    || fail "stale-lock recovery was retired as a healthy Pi replacement: $(cat "$armout")"
+  pass "watch-arm: stale-lock recovery stays actionable under Pi ownership"
 }
 
 test_delivery_gap_wake_is_recovered_once() {
@@ -545,7 +542,7 @@ test_malformed_marker_is_quarantined_once() {
     || fail "malformed recovery state was retired as a healthy empty replacement"
   invalid_count=$(find "$state" -maxdepth 1 -type d -name '.watcher-down.invalid.*' | wc -l | tr -d '[:space:]')
   [ "$invalid_count" -eq 1 ] || fail "malformed marker was not quarantined exactly once"
-  start_rearm_arm "$home" "$state" "$fakebin" "$dir/repaired-arm.out"
+  start_rearm_arm "$home" "$state" "$fakebin" "$dir/repaired-arm.out" "$ARM_PID"
   sleep 1.2
   is_live_non_zombie "$ARM_PID" || fail "valid replacement repeated the malformed recovery warning"
   ! grep -F 'check: rearm-resurface' "$dir/repaired-arm.out" >/dev/null \
@@ -602,18 +599,14 @@ test_restart_preserves_recovery_across_reused_pid_lock() {
   printf '%s\n' 'reused-pid-does-not-match' > "$owner/pid-identity"
   ln -s "$owner" "$state/.watch.lock"
 
-  start_rearm_arm "$home" "$state" "$fakebin" "$armout"
-  sleep 1.2
-  is_live_non_zombie "$ARM_PID" || fail "restart emitted an empty recovery after clearing a reused-pid lock"
-  ! grep -F 'check: rearm-resurface' "$armout" >/dev/null \
-    || fail "restart manufactured a wake from empty reused-pid evidence: $(cat "$armout")"
+  start_rearm_arm "$home" "$state" "$fakebin" "$armout" "" pi
+  wait_for_exit "$ARM_PID" 80 || fail "restart did not surface reused-pid watcher loss"
+  grep -F 'check: rearm-resurface' "$armout" >/dev/null \
+    || fail "restart retired reused-pid watcher loss as a healthy Pi replacement: $(cat "$armout")"
   is_live_non_zombie "$unrelated" || fail "restart signaled the unrelated process whose pid was reused"
-  printf 'done: real wake after reused-pid recovery\n' > "$state/reused-pid-recovered.status"
-  wait_for_exit "$ARM_PID" 80 || fail "restart lost later work after clearing a reused-pid lock"
-  grep -q '^signal:' "$armout" || fail "restart did not surface later real work: $(cat "$armout")"
   kill "$unrelated" 2>/dev/null || true
   wait "$unrelated" 2>/dev/null || true
-  pass "watch-arm: restart clears reused-pid evidence silently and preserves later work"
+  pass "watch-arm: reused-pid watcher loss remains actionable under Pi ownership"
 }
 
 test_markerless_legacy_queue_is_recovered_on_arm() {
