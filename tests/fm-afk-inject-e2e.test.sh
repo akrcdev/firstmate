@@ -15,6 +15,10 @@
 #     A captain-relevant status must deliver exactly ONE sentinel-prefixed,
 #     single-line digest with no duplicate or spurious user submission.
 #
+#   Scenario D (keyed decision fold): the catch-all buffers two open decisions,
+#     one closes before the delayed batch flush, and worker progress continues.
+#     Only the genuinely open key may be injected, once.
+#
 # Isolation: all test tmux runs on a dedicated socket (tmux -L afk-e2e-<pid>).
 # A tmux shim first on PATH redirects the daemon's bare `tmux` calls to the
 # private socket. The daemon points at a throwaway state dir (FM_STATE_OVERRIDE)
@@ -163,11 +167,13 @@ chmod +x "$TMUX_SHIM_DIR/tmux"
 "$REAL_TMUX" -L "$SOCKET" new-window -d -n fm-fake-c1 -t supervisor
 
 start_daemon() {
+  local batch_secs=${1:-0} heartbeat_scan_secs=${2:-300}
   PATH="$TMUX_SHIM_DIR:$PATH" \
   FM_STATE_OVERRIDE="$STATE_DIR" \
   FM_SUPERVISOR_TARGET="$SUPERVISOR_PANE" \
   FM_SUPERVISOR_BACKEND=tmux \
-  FM_ESCALATE_BATCH_SECS=0 \
+  FM_ESCALATE_BATCH_SECS="$batch_secs" \
+  FM_HEARTBEAT_SCAN_SECS="$heartbeat_scan_secs" \
   FM_HOUSEKEEPING_TICK=1 \
   FM_POLL=1 \
   FM_SIGNAL_GRACE=1 \
@@ -377,6 +383,17 @@ test_scenario_b() {
   pass "Scenario B: swallowed Enter produces exactly one clean digest"
 }
 
+mark_watcher_signal_seen() {  # <status-file>
+  local file=$1 sig marker
+  if [ "$(uname)" = Darwin ]; then
+    sig=$(stat -f '%z:%Fm' "$file")
+  else
+    sig=$(stat -c '%s:%Y' "$file")
+  fi
+  marker="$STATE_DIR/.seen-$(basename "$file" | tr '.' '_')"
+  printf '%s' "$sig" > "$marker"
+}
+
 # --- Scenario C: normal status, single clean digest -------------------------
 # No human input, no swallowed Enter: a captain-relevant status must produce
 # exactly ONE sentinel-prefixed, single-line digest, submitted once. This owns
@@ -421,8 +438,65 @@ test_scenario_c() {
   pass "Scenario C: a normal captain status injects exactly one clean single-line sentinel digest"
 }
 
+# --- Scenario D: keyed catch-all folding before delayed injection -----------
+
+test_scenario_d() {
+  local closed="$STATE_DIR/closed-review.status" open="$STATE_DIR/open-review.status" i digest_count
+  reset_state
+  afk_enter "$STATE_DIR"
+  printf '%s\n' \
+    'needs-decision [key=review-fix-round-8]: old review choice' \
+    > "$closed"
+  printf '%s\n' \
+    'needs-decision [key=genuine-open]: captain must choose the release shape' \
+    'working: implementation continues around the open choice' \
+    > "$open"
+  # The watcher has already observed these bytes, so only the daemon's real
+  # catch-all can populate the delayed escalation batch.
+  mark_watcher_signal_seen "$closed"
+  mark_watcher_signal_seen "$open"
+  start_daemon 5 1
+
+  i=0
+  while [ "$i" -lt 50 ]; do
+    if grep -Fq 'review-fix-round-8' "$STATE_DIR/.subsuper-escalations" 2>/dev/null \
+      && grep -Fq 'genuine-open' "$STATE_DIR/.subsuper-escalations" 2>/dev/null; then
+      break
+    fi
+    sleep 0.2
+    i=$((i + 1))
+  done
+  grep -Fq 'review-fix-round-8' "$STATE_DIR/.subsuper-escalations" 2>/dev/null \
+    || fail "Scenario D: catch-all did not buffer the initially open review decision"
+  grep -Fq 'genuine-open' "$STATE_DIR/.subsuper-escalations" 2>/dev/null \
+    || fail "Scenario D: catch-all missed the genuinely open decision behind working progress"
+
+  printf '%s\n' \
+    'resolved [key=review-fix-round-8]: review correction accepted' \
+    'working: applying the accepted review correction' \
+    >> "$closed"
+  mark_watcher_signal_seen "$closed"
+  sleep 8
+
+  grep -Fq 'genuine-open' "$LOG_FILE" \
+    || fail "Scenario D: genuinely open decision was not injected"
+  ! grep -Fq 'review-fix-round-8' "$LOG_FILE" \
+    || fail "Scenario D: resolved decision was injected from the delayed catch-all batch"
+  digest_count=$(grep -c 'Supervisor escalate' "$LOG_FILE" || true)
+  [ "$digest_count" -eq 1 ] \
+    || fail "Scenario D: expected one folded decision digest, got $digest_count"
+  sleep 3
+  digest_count=$(grep -c 'Supervisor escalate' "$LOG_FILE" || true)
+  [ "$digest_count" -eq 1 ] \
+    || fail "Scenario D: repeated catch-all scans reinjected a decision"
+
+  stop_daemon
+  pass "Scenario D: keyed catch-all drops resolved decisions and injects a genuinely open key once"
+}
+
 test_scenario_a
 test_scenario_b
 test_scenario_c
+test_scenario_d
 
 echo "all e2e injection tests passed"

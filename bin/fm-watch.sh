@@ -870,23 +870,25 @@ if ! fm_lock_try_acquire "$WATCH_LOCK"; then
   fi
   exit 0
 fi
+# Downtime is evidence that supervision crossed a process boundary, not itself
+# model-visible work. A normal arm retires an empty episode atomically with the
+# queue check; a handling successor preserves the predecessor's generation until
+# the adapter confirms delivery of that predecessor's real actionable wake.
 WATCHER_RECOVERY_PENDING=0
-if [ -n "${FM_LOCK_RECOVERED_PID:-}" ]; then
-  WATCHER_RECOVERY_PENDING=1
-fi
+recovery_empty_policy=present
 if [ "${FM_WATCH_HANDLING_SUCCESSOR:-0}" != 1 ]; then
+  recovery_empty_policy=retire
   if ! fm_recovery_marker_reopen_announced "$WATCHER_DOWNTIME_MARKER"; then
     echo "watcher: recovery state could not be reopened safely; retaining stale lock evidence" >&2
     exit 1
   fi
 fi
-if ! fm_recovery_marker_arm_check "$WATCHER_DOWNTIME_MARKER"; then
+if ! fm_recovery_marker_arm_check "$WATCHER_DOWNTIME_MARKER" "$recovery_empty_policy"; then
   echo "watcher: recovery state could not be consumed safely; retaining stale lock evidence" >&2
   exit 1
 fi
-if [ "${FM_WATCH_HANDLING_SUCCESSOR:-0}" = 1 ]; then
-  WATCHER_RECOVERY_PENDING=0
-elif [ "$FM_RECOVERY_MARKER_ACTION" = recover ]; then
+if [ "${FM_WATCH_HANDLING_SUCCESSOR:-0}" != 1 ] \
+  && [ "$FM_RECOVERY_MARKER_ACTION" = recover ]; then
   WATCHER_RECOVERY_PENDING=1
 fi
 watcher_cleanup() {
@@ -941,7 +943,10 @@ resurface_after_downtime() {
     return 0
   fi
   if [ "$WATCHER_RECOVERY_PENDING" -ne 1 ]; then
-    if ! fm_recovery_marker_arm_check "$WATCHER_DOWNTIME_MARKER"; then
+    # The retire policy is queue-atomic: an empty recovery becomes quiet, while
+    # an append racing this check remains durable and forces this wake now or on
+    # the next poll under a fresh generation.
+    if ! fm_recovery_marker_arm_check "$WATCHER_DOWNTIME_MARKER" retire; then
       echo "watcher: recovery state could not be consumed safely" >&2
       exit 1
     fi

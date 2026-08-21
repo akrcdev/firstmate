@@ -54,9 +54,11 @@
 #     undelivered past FM_MAX_DEFER_SECS, the daemon retries a normal flush and
 #     writes state/.subsuper-inject-wedged and attempts a configurable active
 #     alert if submit still cannot be confirmed.
-#   - Cheap heartbeat catch-all: every HEARTBEAT_SCAN_SECS the daemon greps all
-#     state/*.status for a captain-relevant line the per-wake classifier might
-#     have missed (e.g. a status verb outside CAPTAIN_RE) and escalates it.
+#   - Cheap heartbeat catch-all: every HEARTBEAT_SCAN_SECS the daemon scans
+#     state/*.status for captain-relevant work the per-wake classifier might
+#     have missed. Keyed decisions use the shared whole-log open/resolved fold,
+#     and buffered decision records are revalidated before injection so a
+#     resolution that lands during batching removes the stale escalation.
 #
 # The robustness shell from the prior always-inject version is preserved:
 # single-instance lock (portable helper, no flock dependency), crash-loop
@@ -431,9 +433,15 @@ classify_unknown() {  # <reason>
 
 # --- stale marker + escalation buffer (stateful, but via explicit state dir) -
 # Marker:   state/.subsuper-stale-<key>   contains the epoch first seen idle.
-# Buffer:   state/.subsuper-escalations    one distilled line per escalation.
+# Buffer:   state/.subsuper-escalations    one row per escalation. Ordinary rows
+#                                             are display text. Revalidatable
+#                                             decisions are five tab-separated
+#                                             fields: decision, task, key, opening
+#                                             line number, and display text.
 # Seen:     state/.subsuper-seen-status-<task>  last status line the scan
 #           escalated, so the catch-all does not re-fire the same terminal.
+#           state/.subsuper-seen-decision-<hash> stores task, key, opening line
+#           number, and display text as four tab-separated fields.
 
 _stale_key() { printf '%s' "$1" | tr ':/.' '___'; }
 
@@ -645,6 +653,175 @@ escalate_add() {  # <state> <distilled-item>
   printf '%s\n' "$item" >> "$buf"
 }
 
+# Keyed decision records stay revalidatable until injection. The status log's
+# open/resolved fold is authoritative: a buffered decision that closes while the
+# batch waits is removed, while a decision buried under later working progress
+# remains open and is still delivered.
+decision_escalation_display() {  # <task> <key> <verb> <note>
+  local task=$1 key=$2 verb=$3 note=$4 display
+  display="$task.status: $verb [key=$key]: $note"
+  printf '%s' "$display" | tr '\t\r\n' '   '
+}
+
+FM_DECISION_CURRENT_ORIGIN=
+FM_DECISION_CURRENT_DISPLAY=
+decision_current_record() {  # <state> <task> <key>
+  local state=$1 task=$2 wanted=$3 key verb note origin
+  FM_DECISION_CURRENT_ORIGIN=
+  FM_DECISION_CURRENT_DISPLAY=
+  while IFS=$(printf '\t') read -r key verb note origin; do
+    [ "$key" = "$wanted" ] || continue
+    FM_DECISION_CURRENT_ORIGIN=$origin
+    FM_DECISION_CURRENT_DISPLAY=$(decision_escalation_display "$task" "$key" "$verb" "$note")
+    return 0
+  done <<EOF
+$(status_open_decisions_with_origin "$state/$task.status")
+EOF
+  return 1
+}
+
+decision_seen_path() {  # <state> <task> <key>
+  local state=$1 task=$2 key=$3 digest
+  digest=$(_hash_text "$task"$'\t'"$key")
+  printf '%s/.subsuper-seen-decision-%s' "$state" "$digest"
+}
+
+mark_decision_seen() {  # <state> <task> <key> <origin> <display>
+  local state=$1 task=$2 key=$3 origin=$4 display=$5 seen
+  seen=$(decision_seen_path "$state" "$task" "$key")
+  printf '%s\t%s\t%s\t%s\n' "$task" "$key" "$origin" "$display" > "$seen"
+}
+
+reconcile_decision_seen_markers() {  # <state>
+  local state=$1 seen task key origin display extra
+  for seen in "$state"/.subsuper-seen-decision-*; do
+    [ -e "$seen" ] || continue
+    IFS=$(printf '\t') read -r task key origin display extra < "$seen" || true
+    if [ -z "$task" ] || [ -z "$key" ] || [ -z "$origin" ] || [ -n "$extra" ]; then
+      rm -f "$seen"
+      continue
+    fi
+    if ! decision_current_record "$state" "$task" "$key" \
+      || [ "$FM_DECISION_CURRENT_ORIGIN" != "$origin" ] \
+      || [ "$FM_DECISION_CURRENT_DISPLAY" != "$display" ]; then
+      rm -f "$seen"
+    fi
+  done
+}
+
+escalate_add_decision() {  # <state> <task> <key> <verb> <note> <origin>
+  local state=$1 task=$2 key=$3 verb=$4 note=$5 origin=$6 display seen buf
+  display=$(decision_escalation_display "$task" "$key" "$verb" "$note")
+  seen=$(decision_seen_path "$state" "$task" "$key")
+  if [ "$(cut -f3 "$seen" 2>/dev/null || true)" = "$origin" ] \
+    && [ "$(cut -f4- "$seen" 2>/dev/null || true)" = "$display" ]; then
+    return 0
+  fi
+  buf="$state/.subsuper-escalations"
+  [ -s "$buf" ] || _now > "${buf}.since"
+  printf 'decision\t%s\t%s\t%s\t%s\n' "$task" "$key" "$origin" "$display" >> "$buf"
+  mark_decision_seen "$state" "$task" "$key" "$origin" "$display"
+}
+
+buffer_open_decisions_for_task() {  # <state> <task>
+  local state=$1 task=$2 key verb note origin found=1
+  while IFS=$(printf '\t') read -r key verb note origin; do
+    [ -n "$key" ] && [ -n "$origin" ] || continue
+    escalate_add_decision "$state" "$task" "$key" "$verb" "$note" "$origin"
+    found=0
+  done <<EOF
+$(status_open_decisions_with_origin "$state/$task.status")
+EOF
+  return "$found"
+}
+
+buffer_signal_statuses() {  # <space-separated-status-paths> <state>
+  local paths=$1 state=$2 f last verb task found=1
+  for f in $paths; do
+    case "$f" in *.status) ;; *) continue ;; esac
+    [ -e "$f" ] || continue
+    last=$(last_status_line "$f")
+    status_is_captain_relevant "$last" || continue
+    task=$(basename "$f"); task=${task%.status}
+    verb=$(status_line_verb "$last")
+    case "$verb" in
+      needs-decision|blocked)
+        if buffer_open_decisions_for_task "$state" "$task"; then found=0; fi
+        ;;
+      *)
+        escalate_add "$state" "$(basename "$f"): $last"
+        found=0
+        ;;
+    esac
+  done
+  return "$found"
+}
+
+legacy_buffered_decision() {  # <state> <plain-buffer-row>
+  local state=$1 row=$2 task line verb key
+  FM_BUFFERED_DECISION_TASK=
+  FM_BUFFERED_DECISION_KEY=
+  FM_BUFFERED_DECISION_ORIGIN=
+  FM_BUFFERED_DECISION_DISPLAY=
+  case "$row" in *" | "*) return 1 ;; esac
+  task=${row%%.status:*}
+  [ "$task" != "$row" ] || return 1
+  case "$task" in ''|*[!A-Za-z0-9._-]*) return 1 ;; esac
+  line=${row#*.status: }
+  line=${line% (catch-all scan)}
+  verb=$(status_line_verb "$line")
+  case "$verb" in needs-decision|blocked) ;; *) return 1 ;; esac
+  key=$(_fm_decision_key "$line") || return 1
+  decision_current_record "$state" "$task" "$key" 2>/dev/null || true
+  FM_BUFFERED_DECISION_TASK=$task
+  FM_BUFFERED_DECISION_KEY=$key
+  FM_BUFFERED_DECISION_ORIGIN=$FM_DECISION_CURRENT_ORIGIN
+  FM_BUFFERED_DECISION_DISPLAY=$FM_DECISION_CURRENT_DISPLAY
+  return 0
+}
+
+escalate_reconcile_decisions() {  # <state>
+  local state=$1 buf tmp dedup row type task key origin display extra seen
+  buf="$state/.subsuper-escalations"
+  [ -s "$buf" ] || return 0
+  tmp="$buf.reconcile.$$"
+  dedup="$tmp.dedup"
+  : > "$tmp" || return 1
+  while IFS= read -r row || [ -n "$row" ]; do
+    IFS=$(printf '\t') read -r type task key origin display extra <<EOF
+$row
+EOF
+    if [ "$type" = decision ] && [ -n "$task" ] && [ -n "$key" ] \
+      && [ -n "$origin" ] && [ -z "$extra" ]; then
+      if decision_current_record "$state" "$task" "$key"; then
+        printf 'decision\t%s\t%s\t%s\t%s\n' \
+          "$task" "$key" "$FM_DECISION_CURRENT_ORIGIN" "$FM_DECISION_CURRENT_DISPLAY" >> "$tmp"
+        mark_decision_seen "$state" "$task" "$key" \
+          "$FM_DECISION_CURRENT_ORIGIN" "$FM_DECISION_CURRENT_DISPLAY"
+      else
+        seen=$(decision_seen_path "$state" "$task" "$key")
+        rm -f "$seen"
+      fi
+      continue
+    fi
+    if legacy_buffered_decision "$state" "$row"; then
+      if [ -n "$FM_BUFFERED_DECISION_DISPLAY" ]; then
+        printf 'decision\t%s\t%s\t%s\t%s\n' \
+          "$FM_BUFFERED_DECISION_TASK" "$FM_BUFFERED_DECISION_KEY" \
+          "$FM_BUFFERED_DECISION_ORIGIN" "$FM_BUFFERED_DECISION_DISPLAY" >> "$tmp"
+        mark_decision_seen "$state" "$FM_BUFFERED_DECISION_TASK" \
+          "$FM_BUFFERED_DECISION_KEY" "$FM_BUFFERED_DECISION_ORIGIN" \
+          "$FM_BUFFERED_DECISION_DISPLAY"
+      fi
+      continue
+    fi
+    printf '%s\n' "$row" >> "$tmp"
+  done < "$buf"
+  awk '!seen[$0]++' "$tmp" > "$dedup" || { rm -f "$tmp" "$dedup"; return 1; }
+  mv -f "$dedup" "$buf" || { rm -f "$tmp" "$dedup"; return 1; }
+  rm -f "$tmp"
+}
+
 # Flush the escalation buffer as ONE batched, single-line digest to the
 # supervisor pane. Returns 0 on successful inject (or empty buffer), non-zero on
 # inject failure (buffer preserved for retry / catch-up).
@@ -652,9 +829,21 @@ escalate_flush() {  # <state>
   local state=$1 buf item n msg
   buf="$state/.subsuper-escalations"
   [ -s "$buf" ] || return 0
+  escalate_reconcile_decisions "$state" || return 1
+  if [ ! -s "$buf" ]; then
+    rm -f "${buf}.since"
+    return 0
+  fi
   n=$(wc -l < "$buf" 2>/dev/null || echo 0)
   # Join buffered items with the literal " | " separator into one digest line.
-  msg=$(awk 'NR>1{printf " | "} {printf "%s",$0} END{print ""}' "$buf" 2>/dev/null)
+  # Structured decision rows keep their private identity fields out of the
+  # captain-facing digest.
+  msg=$(awk -F '\t' '
+    NR > 1 { printf " | " }
+    $1 == "decision" && NF == 5 { printf "%s", $5; next }
+    { printf "%s", $0 }
+    END { print "" }
+  ' "$buf" 2>/dev/null)
   # Single-line wrapper: no embedded newlines (inject_msg also collapses as a
   # safety net, but keeping the source single-line makes the intent explicit).
   msg=$(printf 'Supervisor escalate (%s event(s)): %s (pre-read; re-arm not needed — watcher daemon-managed)' "$n" "$msg")
@@ -966,7 +1155,7 @@ _oldest_line_age() {  # <buf> -> seconds since the oldest buffered item first ar
 #  3) heartbeat scan: every HEARTBEAT_SCAN_SECS, grep state/*.status for a
 #     captain-relevant line the per-wake classifier missed and escalate it.
 housekeeping() {  # <state>
-  local state=$1 now due f key task win marker age last max_defer oldest pause_secs
+  local state=$1 now due f key task win marker age last max_defer oldest pause_secs verb
   now=$(_now)
   migrate_watcher_pause_markers "$state"
 
@@ -1072,20 +1261,29 @@ housekeeping() {  # <state>
     esac
   done
 
-  # (3) heartbeat scan (catch-all for a captain-relevant status the per-wake
-  #     classifier may have missed). Cheap: status files only, no tmux. The
-  #     captain-relevant filtering is the shared classifier's
-  #     scan_captain_relevant_statuses; the daemon layers its digest dedup on top.
+  # (3) heartbeat scan (catch-all for captain-relevant status the per-wake
+  #     classifier may have missed). Current done/failed/legacy lines remain
+  #     last-line based. Needs-decision and blocked use the authoritative keyed
+  #     open/resolved fold, so a buried open decision still escalates and a
+  #     later exact resolution cannot be re-injected from a delayed batch.
   if [ "$(_file_age "$state/.subsuper-last-scan")" -ge "${FM_HEARTBEAT_SCAN_SECS:-$HEARTBEAT_SCAN_SECS_DEFAULT}" ]; then
     _now > "$state/.subsuper-last-scan"
     local seen
+    reconcile_decision_seen_markers "$state"
     while IFS="$(printf '\t')" read -r f task last; do
       [ -n "$f" ] || continue
+      verb=$(status_line_verb "$last")
+      case "$verb" in needs-decision|blocked) continue ;; esac
       seen="$state/.subsuper-seen-status-$(_stale_key "$task")"
       [ "$(cat "$seen" 2>/dev/null || true)" = "$last" ] && continue
       escalate_add "$state" "$(basename "$f"): $last (catch-all scan)"
       mark_status_seen "$state" "$task" "$last"
     done < <(scan_captain_relevant_statuses "$state")
+    for f in "$state"/*.status; do
+      [ -e "$f" ] || continue
+      task=$(basename "$f"); task=${task%.status}
+      buffer_open_decisions_for_task "$state" "$task" || true
+    done
   fi
 }
 
@@ -1215,7 +1413,7 @@ is_wake_reason() {  # <reason>
 # --- dispatch one wake reason to self-handle or escalate --------------------
 # Side effects: logging, marker records, escalation buffer appends.
 handle_wake() {  # <reason> <state>
-  local reason=$1 state=$2 decision action distilled task last stale_detail
+  local reason=$1 state=$2 decision action distilled task last stale_detail buffered_status
   local kind="" arg=""
   if should_force_self "$reason"; then
     log "wake force-self (FM_INJECT_SKIP): $reason"
@@ -1241,7 +1439,15 @@ handle_wake() {  # <reason> <state>
   case "$action" in
     escalate)
       log "escalate: $reason -> $distilled"
-      escalate_add "$state" "$distilled"
+      buffered_status=1
+      if [ "$kind" = signal ]; then
+        buffer_signal_statuses "$arg" "$state" && buffered_status=0
+      elif [ "$kind" = stale ] \
+        && [ "${distilled#stale + terminal status:}" != "$distilled" ]; then
+        task=$(window_to_task "$arg" "$state")
+        buffer_open_decisions_for_task "$state" "$task" && buffered_status=0
+      fi
+      [ "$buffered_status" -eq 0 ] || escalate_add "$state" "$distilled"
       # A terminal-stale escalate must not leave a persistence marker behind, or
       # housekeeping re-escalates the same pane as a false wedge later.
       [ "$kind" = "stale" ] && stale_marker_remove "$arg" "$state"

@@ -503,7 +503,7 @@ _fm_atomic_replace() {
 _fm_recovery_marker_write_locked() {
   local marker=$1 kind=$2 generation=${3:-} status=${4:-pending} tmp
   case "$kind" in handling|downtime) ;; *) return 1 ;; esac
-  case "$status" in pending|announced) ;; *) return 1 ;; esac
+  case "$status" in pending|announced|acked) ;; *) return 1 ;; esac
   tmp=$(mktemp "${marker}.tmp.XXXXXX") || return 1
   [ -n "$generation" ] || generation="$(fm_current_pid).$(date +%s).${tmp##*.}"
   if ! printf '%s:%s:%s\n' "$status" "$kind" "$generation" > "$tmp" \
@@ -599,7 +599,7 @@ fm_recovery_marker_snapshot() {
 }
 
 _fm_recovery_marker_ack() {
-  local marker=$1 expected_generation=$2 lock tmp line
+  local marker=$1 expected_generation=$2 lock line kind generation
   [ -n "$expected_generation" ] || return 2
   lock="${marker}.lock"
   fm_lock_acquire_wait "$lock" || return 1
@@ -610,23 +610,32 @@ _fm_recovery_marker_ack() {
   fi
   line=$FM_RECOVERY_MARKER_TOKEN
   case "$line" in
-    pending:*|announced:*) line="acked:${line#*:}" ;;
+    pending:*|announced:*)
+      kind=${line#*:}
+      kind=${kind%%:*}
+      generation=${line##*:}
+      if ! _fm_recovery_marker_write_locked "$marker" "$kind" "$generation" acked; then
+        fm_lock_release "$lock"
+        return 1
+      fi
+      FM_RECOVERY_MARKER_TOKEN="acked:$kind:$generation"
+      ;;
     acked:*) fm_lock_release "$lock"; return 0 ;;
     *) fm_lock_release "$lock"; return 1 ;;
   esac
-  tmp=$(mktemp "${marker}.tmp.XXXXXX") || { fm_lock_release "$lock"; return 1; }
-  if ! printf '%s\n' "$line" > "$tmp" \
-    || ! chmod 0600 "$tmp" \
-    || ! mv -f -- "$tmp" "$marker"; then
-    rm -f -- "$tmp"
-    fm_lock_release "$lock"
-    return 1
-  fi
   fm_lock_release "$lock"
 }
 
+# Decide whether one watcher start has durable work to present while holding the
+# queue and recovery locks together. "retire" is the normal non-successor policy:
+# downtime evidence with an empty queue is acknowledged internally because no
+# handling turn exists, while a concurrent or later append either wins this lock
+# and is presented now or opens a fresh generation after the quiet retirement.
+# Handling successors use "present" so the predecessor's in-flight delivery can
+# still confirm its exact generation before the model sees the real wake.
 _fm_recovery_marker_arm_check() {
-  local marker=$1 lock line quarantine
+  local marker=$1 empty_policy=${2:-present} lock line quarantine generation
+  case "$empty_policy" in present|retire) ;; *) return 2 ;; esac
   FM_RECOVERY_MARKER_ACTION='none'
   lock="${marker}.lock"
   fm_lock_acquire_wait "$FM_WAKE_QUEUE_LOCK" || return 1
@@ -654,14 +663,27 @@ _fm_recovery_marker_arm_check() {
         fm_lock_release "$FM_WAKE_QUEUE_LOCK"
         return 1
       }
-    if ! mv -- "$marker" "$quarantine/marker" \
-      || ! _fm_recovery_marker_write_locked "$marker" downtime "" announced; then
+    if ! mv -- "$marker" "$quarantine/marker"; then
       rmdir "$quarantine" 2>/dev/null || true
       fm_lock_release "$lock"
       fm_lock_release "$FM_WAKE_QUEUE_LOCK"
       return 1
     fi
-    FM_RECOVERY_MARKER_ACTION='recover'
+    if [ "$empty_policy" = retire ] && [ ! -s "$FM_WAKE_QUEUE" ]; then
+      if ! _fm_recovery_marker_write_locked "$marker" downtime "" acked; then
+        fm_lock_release "$lock"
+        fm_lock_release "$FM_WAKE_QUEUE_LOCK"
+        return 1
+      fi
+      FM_RECOVERY_MARKER_ACTION='quiet'
+    else
+      if ! _fm_recovery_marker_write_locked "$marker" downtime "" announced; then
+        fm_lock_release "$lock"
+        fm_lock_release "$FM_WAKE_QUEUE_LOCK"
+        return 1
+      fi
+      FM_RECOVERY_MARKER_ACTION='recover'
+    fi
     fm_lock_release "$lock"
     fm_lock_release "$FM_WAKE_QUEUE_LOCK"
     return 0
@@ -675,13 +697,24 @@ _fm_recovery_marker_arm_check() {
       return 0
       ;;
     pending:downtime:*)
-      if ! _fm_recovery_marker_write_locked "$marker" downtime "${line##*:}" announced; then
-        fm_lock_release "$lock"
-        fm_lock_release "$FM_WAKE_QUEUE_LOCK"
-        return 1
+      generation=${line##*:}
+      if [ "$empty_policy" = retire ] && [ ! -s "$FM_WAKE_QUEUE" ]; then
+        if ! _fm_recovery_marker_write_locked "$marker" downtime "$generation" acked; then
+          fm_lock_release "$lock"
+          fm_lock_release "$FM_WAKE_QUEUE_LOCK"
+          return 1
+        fi
+        FM_RECOVERY_MARKER_TOKEN="acked:downtime:$generation"
+        FM_RECOVERY_MARKER_ACTION='quiet'
+      else
+        if ! _fm_recovery_marker_write_locked "$marker" downtime "$generation" announced; then
+          fm_lock_release "$lock"
+          fm_lock_release "$FM_WAKE_QUEUE_LOCK"
+          return 1
+        fi
+        FM_RECOVERY_MARKER_TOKEN="announced:downtime:$generation"
+        FM_RECOVERY_MARKER_ACTION='recover'
       fi
-      FM_RECOVERY_MARKER_TOKEN="announced:downtime:${line##*:}"
-      FM_RECOVERY_MARKER_ACTION='recover'
       ;;
     acked:*)
       if [ -s "$FM_WAKE_QUEUE" ]; then
@@ -700,9 +733,10 @@ _fm_recovery_marker_arm_check() {
 }
 
 # A non-successor watcher start after an announced-but-unacked episode is a new
-# down stretch: mint a fresh pending generation so a still-open decision or
-# buried note can be presented once more. Handling successors must not call
-# this, because Option B re-arm is not a new down stretch.
+# down stretch. Mint a fresh pending generation so any still-durable queue rows
+# can be presented again; the arm check retires it quietly when no row remains.
+# Handling successors must not call this, because Option B re-arm is not a new
+# down stretch.
 _fm_recovery_marker_reopen_announced() {
   local marker=$1 lock
   lock="${marker}.lock"
@@ -732,7 +766,7 @@ fm_recovery_transition() {
       _fm_recovery_marker_ack "$marker" "$target"
       ;;
     arm-check)
-      _fm_recovery_marker_arm_check "$marker"
+      _fm_recovery_marker_arm_check "$marker" "${target:-present}"
       ;;
     reopen-announced)
       _fm_recovery_marker_reopen_announced "$marker"
@@ -775,7 +809,7 @@ fm_recovery_marker_begin_handling() {
 }
 
 fm_recovery_marker_arm_check() {
-  fm_recovery_transition "$1" arm-check
+  fm_recovery_transition "$1" arm-check "${2:-present}"
 }
 
 fm_recovery_marker_reopen_announced() {

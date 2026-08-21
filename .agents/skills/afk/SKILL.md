@@ -154,9 +154,9 @@ Classify each wake this way:
   If the pane is still idle past `FM_STALE_ESCALATE_SECS` (default 240s), housekeeping escalates it as a possible wedge.
   This bounds wedge-detection latency to the threshold plus a tick: a delay, never a loss.
   Healthy crewmates are autonomous and do not wait on firstmate mid-task.
-- `heartbeat` -> self-handle. The daemon runs its own cheap bash fleet scan
-  every `FM_HEARTBEAT_SCAN_SECS` (default 300s) as the catch-all for a
-  captain-relevant status line the per-wake classifier might miss.
+- `heartbeat` -> self-handle. The daemon runs its own cheap bash fleet scan every `FM_HEARTBEAT_SCAN_SECS` (default 300s) as the catch-all for captain-relevant status the per-wake classifier might miss.
+  Current done, failed, and legacy terminal lines remain last-line based, while needs-decision and blocked entries use `bin/fm-classify-lib.sh`'s authoritative keyed open/resolved fold.
+  The daemon revalidates buffered decision records against that fold immediately before injection, so a decision resolved while batching or delivery is deferred is removed, while a genuinely open decision remains actionable even beneath later working progress.
 - Unknown reason, or any uncertainty -> escalate fail-safe.
 
 Escalations are buffered up to `FM_ESCALATE_BATCH_SECS` (default 90s; 0 =
@@ -200,6 +200,7 @@ the operational prefix lets firstmate distinguish it from a real captain message
 - **Portable singleton lock** - the daemon uses the repo's portable lock helper
   (`fm-wake-lib.sh`) instead of `flock`, which is absent on macOS.
 - **Dedupe across signal/stale/scan** - `classify_signal` and terminal `classify_stale` paths check the seen-status marker before escalating, so a captain-relevant status escalated by one path is not re-escalated by another in the same digest.
+  Keyed decisions additionally carry task, key, and opening-transition identity in the private buffer so delayed injection can revalidate the exact open record rather than replay stale prose.
   The marker does not clear or suppress possible-wedge aging for a nonterminal progress line.
 - **Auto-discovered supervisor pane** - the daemon resolves its own BACKEND
   (tmux vs herdr) and TARGET independently, mirroring

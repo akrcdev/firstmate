@@ -332,8 +332,8 @@ _fm_decision_key_transition_allowed() {  # <key> <note>
   return 0
 }
 
-_fm_decision_fold_line() {  # <open-set> <status-line> <resolve-verb> <held-verb>
-  local open=$1 line=$2 resolve=$3 held=$4 verb key note stripped
+_fm_decision_fold_line() {  # <open-set> <status-line> <resolve-verb> <held-verb> [<origin>]
+  local open=$1 line=$2 resolve=$3 held=$4 origin=${5:-} verb key note stripped
   stripped=${line//[[:space:]]/}
   [ -n "$stripped" ] || { printf '%s' "$open"; return 0; }
   verb=$(status_line_verb "$line")
@@ -345,7 +345,9 @@ _fm_decision_fold_line() {  # <open-set> <status-line> <resolve-verb> <held-verb
       note=$(status_line_note "$line")
       open=$(_fm_decision_drop "$open" "$key")
       [ -n "$open" ] && open="${open}"$'\n'
-      open="${open}${key}"$'\t'"${verb}"$'\t'"${note}"$'\n'
+      open="${open}${key}"$'\t'"${verb}"$'\t'"${note}"
+      [ -z "$origin" ] || open="${open}"$'\t'"${origin}"
+      open="${open}"$'\n'
       ;;
     "$resolve"|"$held")
       open=$(_fm_decision_drop "$open" "$key")
@@ -445,6 +447,24 @@ EOF
     return 0
   fi
   printf '%s' "$verb"
+}
+
+# The same authoritative fold with one fourth field: the append-only line number
+# of the opening transition that owns the current record. Away-mode delivery uses
+# this origin only for dedup, so resolving and reopening the same key with
+# byte-identical prose is still a new decision. The transition semantics remain
+# entirely in _fm_decision_fold_line rather than being reimplemented by the
+# consumer.
+status_open_decisions_with_origin() {  # <status-file>
+  local f=$1 line resolve held open='' line_number=0
+  [ -f "$f" ] && [ -r "$f" ] && [ ! -L "$f" ] || return 0
+  resolve=${FM_CLASSIFY_RESOLVE_VERB:-$FM_CLASSIFY_RESOLVE_VERB_DEFAULT}
+  held=${FM_CLASSIFY_CAPTAIN_HELD_VERB:-$FM_CLASSIFY_CAPTAIN_HELD_VERB_DEFAULT}
+  while IFS= read -r line || [ -n "$line" ]; do
+    line_number=$((line_number + 1))
+    open=$(_fm_decision_fold_line "$open" "$line" "$resolve" "$held" "$line_number")
+  done < "$f"
+  printf '%s' "$open"
 }
 
 # Fleet-wide wrapper around status_open_decisions: scans every task's status

@@ -167,5 +167,52 @@ test_stale_pane_transient_persistent_resume() {
   pass "lifecycle: stale pane transient self-handles, persistent escalates once and clears, resumed clears quietly"
 }
 
+# --- Phase 3: keyed decision catch-all -> resolve before injection -----------
+test_keyed_decision_catchall_revalidates_before_injection() {
+  local dir state fakebin sent buffer
+  dir=$(make_supercase wd-keyed-decisions)
+  state="$dir/state"
+  fakebin="$dir/fakebin"
+  sent="$dir/sent.log"
+  buffer="$state/.subsuper-escalations"
+  : > "$sent"
+  printf '%s\n' \
+    'needs-decision [key=review-fix-round-8]: old review choice' \
+    > "$state/closed-review.status"
+  printf '%s\n' \
+    'needs-decision [key=genuine-open]: captain must choose the release shape' \
+    'working: implementation continues around the open choice' \
+    > "$state/open-review.status"
+
+  rm -f "$state/.subsuper-last-scan"
+  FM_STATE_OVERRIDE="$state" housekeeping "$state"
+  grep -Fq 'review-fix-round-8' "$buffer" \
+    || fail "keyed catch-all did not buffer the initially open review decision"
+  grep -Fq 'genuine-open' "$buffer" \
+    || fail "keyed catch-all lost an open decision behind working progress"
+
+  printf '%s\n' \
+    'resolved [key=review-fix-round-8]: review correction accepted' \
+    'working: applying the accepted review correction' \
+    >> "$state/closed-review.status"
+  printf '❯\n' > "$dir/pane.txt"
+  afk_enter "$state"
+  PATH="$fakebin:$PATH" FM_FAKE_TMUX_PANE_ALIVE=1 FM_FAKE_TMUX_SENT="$sent" \
+    FM_FAKE_TMUX_CAPTURE="$dir/pane.txt" FM_ESCALATE_BATCH_SECS=0 escalate_flush "$state" \
+    || fail "keyed catch-all digest could not flush"
+  grep -Fq 'genuine-open' "$sent" \
+    || fail "genuinely open decision was not injected"
+  ! grep -Fq 'review-fix-round-8' "$sent" \
+    || fail "resolved decision was injected from the delayed catch-all batch"
+  [ "$(grep -c '\[ENTER\]' "$sent")" -eq 1 ] \
+    || fail "keyed catch-all did not submit exactly one folded digest"
+
+  echo $(( $(date +%s) - 99999 )) > "$state/.subsuper-last-scan"
+  FM_STATE_OVERRIDE="$state" housekeeping "$state"
+  [ ! -s "$buffer" ] || fail "repeat catch-all scan buffered an already delivered or closed decision"
+  pass "lifecycle: keyed catch-all prunes resolved work and injects a genuinely open decision once"
+}
+
 test_routine_then_terminal_after_restart
 test_stale_pane_transient_persistent_resume
+test_keyed_decision_catchall_revalidates_before_injection

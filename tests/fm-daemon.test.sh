@@ -726,6 +726,74 @@ test_heartbeat_scan_dedup() {
   pass "catch-all scan escalates a missed terminal once, not twice"
 }
 
+test_heartbeat_scan_folds_keyed_decisions_before_injection() {
+  local dir state buffer
+  dir=$(make_supercase scan-keyed-decisions)
+  state="$dir/state"
+  buffer="$state/.subsuper-escalations"
+  printf '%s\n' \
+    'needs-decision [key=review-fix-round-8]: old review choice' \
+    > "$state/closed-review.status"
+  printf '%s\n' \
+    'needs-decision [key=genuine-open]: captain must choose the release shape' \
+    'working: implementation continues around the open choice' \
+    > "$state/open-review.status"
+
+  rm -f "$state/.subsuper-last-scan"
+  FM_STATE_OVERRIDE="$state" housekeeping "$state"
+  grep -F 'review-fix-round-8' "$buffer" >/dev/null \
+    || fail "catch-all did not buffer the initially open review decision"
+  grep -F 'genuine-open' "$buffer" >/dev/null \
+    || fail "catch-all lost a genuinely open decision buried under working progress"
+
+  printf '%s\n' \
+    'resolved [key=review-fix-round-8]: review correction accepted' \
+    'working: applying the accepted review correction' \
+    >> "$state/closed-review.status"
+  FM_STATE_OVERRIDE="$state" escalate_reconcile_decisions "$state" \
+    || fail "buffered decision reconciliation failed"
+  ! grep -F 'review-fix-round-8' "$buffer" >/dev/null \
+    || fail "closed review decision remained buffered for reinjection"
+  grep -F 'genuine-open' "$buffer" >/dev/null \
+    || fail "reconciliation removed a genuinely open decision"
+
+  rm -f "$state/.subsuper-last-scan"
+  FM_STATE_OVERRIDE="$state" housekeeping "$state"
+  [ "$(grep -Fc 'genuine-open' "$buffer")" -eq 1 ] \
+    || fail "catch-all duplicated or lost the genuinely open decision"
+  ! grep -F 'review-fix-round-8' "$buffer" >/dev/null \
+    || fail "catch-all re-added the closed review decision"
+
+  # A pre-upgrade plain catch-all row is also revalidated before delivery.
+  printf '%s\n' \
+    'closed-review.status: needs-decision [key=review-fix-round-8]: old review choice (catch-all scan)' \
+    >> "$buffer"
+  FM_STATE_OVERRIDE="$state" escalate_reconcile_decisions "$state" \
+    || fail "legacy buffered decision reconciliation failed"
+  ! grep -F 'review-fix-round-8' "$buffer" >/dev/null \
+    || fail "legacy closed decision survived pre-injection reconciliation"
+
+  # Resolving and reopening the same key with identical prose is a new decision,
+  # identified by its later opening transition rather than text alone.
+  : > "$buffer"
+  printf '%s\n' \
+    'resolved [key=genuine-open]: first decision answered' \
+    'working: applying the first answer' \
+    >> "$state/open-review.status"
+  rm -f "$state/.subsuper-last-scan"
+  FM_STATE_OVERRIDE="$state" housekeeping "$state"
+  [ ! -s "$buffer" ] || fail "resolved genuine-open decision was re-buffered"
+  printf '%s\n' \
+    'needs-decision [key=genuine-open]: captain must choose the release shape' \
+    'working: implementation continues around the reopened choice' \
+    >> "$state/open-review.status"
+  rm -f "$state/.subsuper-last-scan"
+  FM_STATE_OVERRIDE="$state" housekeeping "$state"
+  grep -F 'genuine-open' "$buffer" >/dev/null \
+    || fail "same-text reopened decision was suppressed as already delivered"
+  pass "catch-all folds keyed open/resolved decisions and prunes delayed closed entries"
+}
+
 test_handle_wake_routes_self_and_escalate() {
   local dir state
   dir=$(make_supercase handle)
@@ -1958,6 +2026,7 @@ test_housekeeping_orca_persistent_stale_resolves_terminal
 test_escalate_batches_into_one_digest
 test_escalate_batch_age_uses_first_append
 test_heartbeat_scan_dedup
+test_heartbeat_scan_folds_keyed_decisions_before_injection
 test_handle_wake_routes_self_and_escalate
 test_inject_skip_forces_self
 test_is_wake_reason_distinguishes_status_stdout

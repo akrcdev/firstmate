@@ -57,6 +57,149 @@ export const Type = {
 JS
 }
 
+# T0: an orderly Pi session-generation replacement leaves downtime evidence but
+# no durable wake. The replacement must stay silent until real work arrives.
+test_pi_empty_replacement_stays_silent_until_real_wake() {
+  local repo home plugin fakebin out status lock_pid prompt_count
+  repo="$TMP_ROOT/t0-root"
+  home="$TMP_ROOT/t0-home"
+  fakebin="$TMP_ROOT/t0-fakebin"
+  mkdir -p "$repo/bin" "$home/state" "$home/config" "$fakebin"
+  install_pi_watch_extension_fixture "$repo"
+  plugin="$repo/.pi/extensions/fm-primary-pi-watch.ts"
+  cat > "$fakebin/tmux" <<'SH'
+#!/usr/bin/env bash
+exit 0
+SH
+  chmod +x "$fakebin/tmux"
+  cat > "$repo/bin/fm-watch-arm.sh" <<SH
+#!/usr/bin/env bash
+if [ "\${1:-}" = --handling-delivered ]; then
+  export FM_ROOT_OVERRIDE="$ROOT"
+  export PATH="$fakebin:\$PATH"
+  exec "$ROOT/bin/fm-watch-arm.sh" "\$@"
+fi
+count=0
+[ ! -f "$home/state/.arm-invocations" ] || count=\$(cat "$home/state/.arm-invocations")
+count=\$((count + 1))
+printf '%s\n' "\$count" > "$home/state/.arm-invocations"
+if [ "\$count" -eq 1 ]; then
+  printf '%s\n' "\$\$" > "$home/state/.first-arm-pid"
+  printf 'watcher: started pid=%s (beacon fresh)\n' "\$\$"
+  trap 'printf "pending:downtime:orderly-replacement\n" > "$home/state/.watcher-down"; chmod 600 "$home/state/.watcher-down"; exit 0' TERM INT
+  while :; do sleep 0.05; done
+fi
+export FM_ROOT_OVERRIDE="$ROOT"
+export PATH="$fakebin:\$PATH"
+exec "$ROOT/bin/fm-watch-arm.sh" "\$@"
+SH
+  chmod +x "$repo/bin/fm-watch-arm.sh"
+  out=$(
+    PLUGIN="$plugin" FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" \
+      FM_STATE_OVERRIDE="$home/state" PATH="$fakebin:$PATH" \
+      FM_POLL=1 FM_SIGNAL_GRACE=0 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 \
+      node --input-type=module 2>&1 <<'EOF'
+import { spawnSync } from "node:child_process";
+import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
+
+let tool = null;
+const handlers = new Map();
+const prompts = [];
+const pi = {
+  on(event, handler) {
+    handlers.set(event, handler);
+  },
+  registerCommand() {},
+  registerTool(candidate) {
+    if (candidate.name === "fm_watch_arm_pi") tool = candidate;
+  },
+  sendUserMessage: async (message) => {
+    prompts.push(String(message));
+  },
+};
+const state = `${process.env.FM_HOME}/state`;
+const lock = `${state}/.lock`;
+const watchPid = () => existsSync(`${state}/.watch.lock/pid`)
+  ? readFileSync(`${state}/.watch.lock/pid`, "utf8").trim()
+  : "";
+const pidAlive = (pid) => {
+  if (!/^[0-9]+$/.test(pid)) return false;
+  const result = spawnSync("ps", ["-o", "stat=", "-p", pid], { encoding: "utf8" });
+  const processState = result.status === 0 ? result.stdout.trim() : "";
+  return Boolean(processState) && !processState.startsWith("Z");
+};
+const queueBytes = () => existsSync(`${state}/.wake-queue`) ? statSync(`${state}/.wake-queue`).size : 0;
+async function waitFor(predicate, message, attempts = 250) {
+  for (let i = 0; i < attempts; i += 1) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error(message);
+}
+
+writeFileSync(lock, `${process.pid}\n`);
+const mod = await import(pathToFileURL(process.env.PLUGIN).href);
+mod.default(pi);
+if (!tool) throw new Error("Pi watch tool was not registered");
+await tool.execute("tool-call-initial", {}, undefined, undefined, {});
+await waitFor(() => existsSync(`${state}/.first-arm-pid`), "initial arm did not become live");
+const initialArm = readFileSync(`${state}/.first-arm-pid`, "utf8").trim();
+await waitFor(() => pidAlive(initialArm), "initial arm process was not live");
+await handlers.get("session_shutdown")?.({ type: "session_shutdown", reason: "new" }, {});
+await waitFor(() => !pidAlive(initialArm), "old session generation did not retire its arm");
+await waitFor(() => existsSync(`${state}/.watcher-down`), "old session generation did not publish downtime evidence");
+if (queueBytes() !== 0) throw new Error(`orderly replacement unexpectedly queued ${queueBytes()} bytes`);
+const stoppedMarker = readFileSync(`${state}/.watcher-down`, "utf8").trim();
+if (!stoppedMarker.startsWith("pending:downtime:")) {
+  throw new Error(`orderly replacement did not preserve downtime evidence: ${stoppedMarker}`);
+}
+
+await handlers.get("session_start")?.({ type: "session_start", reason: "new" }, {});
+await tool.execute("tool-call-replacement", {}, undefined, undefined, {});
+await waitFor(() => {
+  const pid = watchPid();
+  return pid && pidAlive(pid);
+}, "replacement watcher did not become live");
+await new Promise((resolve) => setTimeout(resolve, 1500));
+if (prompts.length !== 0) {
+  throw new Error(`empty replacement injected a follow-up: ${prompts.join(" || ")}`);
+}
+if (queueBytes() !== 0) throw new Error(`silent replacement grew an empty queue to ${queueBytes()} bytes`);
+
+writeFileSync(`${state}/replacement.status`, "done: replacement actionable wake\n");
+await waitFor(() => prompts.length > 0, "real actionable wake was not delivered");
+if (prompts.length !== 1) throw new Error(`one real wake produced ${prompts.length} follow-ups`);
+if (!prompts[0].includes("signal:") || !prompts[0].includes("replacement.status")) {
+  throw new Error(`real wake lost its actionable reason: ${prompts[0]}`);
+}
+if (prompts[0].includes("rearm-resurface")) {
+  throw new Error(`real wake was replaced by synthetic recovery: ${prompts[0]}`);
+}
+await new Promise((resolve) => setTimeout(resolve, 1500));
+if (prompts.length !== 1) throw new Error(`real wake started an empty follow-up chain: ${prompts.length}`);
+const successor = watchPid();
+if (!pidAlive(successor)) throw new Error(`actionable delivery left no live successor: ${successor}`);
+console.log(`T0_PROMPTS=${prompts.length}`);
+console.log(`T0_LOCK_PID=${successor}`);
+console.log(`T0_MARKER=${readFileSync(`${state}/.watcher-down`, "utf8").trim()}`);
+process.exit(0);
+EOF
+  )
+  status=$?
+  if [ "${FM_TEST_EVIDENCE:-0}" = 1 ]; then
+    printf '%s\n' "$out"
+  fi
+  lock_pid=$(sed -n 's/^T0_LOCK_PID=//p' <<<"$out" | tail -1)
+  prompt_count=$(sed -n 's/^T0_PROMPTS=//p' <<<"$out" | tail -1)
+  if [ -n "$lock_pid" ]; then
+    kill -TERM "$lock_pid" 2>/dev/null || true
+  fi
+  expect_code 0 "$status" "an empty Pi replacement must stay silent until real work arrives: $out"
+  [ "$prompt_count" = 1 ] || fail "T0 did not report exactly one real follow-up: $out"
+  pass "an empty Pi replacement stays silent and the next real wake is delivered once"
+}
+
 # T1: a lost --handling-delivered handshake must not re-announce forever.
 # The real Pi extension drives the real arm/watcher, with only the handshake
 # RPC forced to fail. After the first recovery follow-up, wait past the old
@@ -218,5 +361,6 @@ test_handling_successor_does_not_go_blind() {
   pass "a resurfacing handling successor stays alive and supervises instead of going blind"
 }
 
+test_pi_empty_replacement_stays_silent_until_real_wake
 test_handling_successor_does_not_go_blind
 test_unacknowledged_recovery_is_announced_once_per_generation

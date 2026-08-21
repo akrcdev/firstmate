@@ -294,7 +294,7 @@ Harness identity is read from the executable path and `argv[0]` as well as the c
 `tests/fm-session-lock-ancestry.test.sh` pins both platforms' reporting semantics behind a deterministic process table and runs the real Stop auto-arm in version-named, daemon-parented, and combined real process trees.
 `tests/fm-watch-arm.test.sh` runs real watcher and arm cycles against durable on-disk state to verify that a delivered reason survives until post-handling acknowledgement and stops replaying after acknowledgement, while an unrelated queue append cannot make a watcher cycle that delivered nothing look successful.
 The same suite ingests a keyed remote-secondmate parent reply through the real adapter, establishes the incremental OPEN DECISIONS cursor, interrupts supervision, and proves re-arm replays every unacknowledged queue row plus the still-open decision through the ordinary drain path.
-It also covers decision-only recovery, interrupted handling, handling-window generation reuse, non-fatal moved-generation acknowledgement with sequence-bounded consumption, and a persistent successor remaining live after recovery is acknowledged.
+It also proves an empty re-arm does not create a decision-only turn, later durable work still carries the existing open decision through the ordinary drain, interrupted handling remains replayable, handling-window generations remain stable, moved-generation acknowledgement consumes only its bounded rows, and a persistent successor remains live after recovery is acknowledged.
 
 The Claude product live path ran with Claude Code 2.1.219 on 2026-07-24:
 
@@ -429,7 +429,7 @@ grok 0.2.103 (89c3d36fb6f1) [stable]
 | Claude | `FM_CLAUDE_LIVE_E2E=1 tests/fm-claude-stop-autoarm-live-e2e.test.sh` | Session start reclaimed a stale owner before two Stop-owned cycles, and a competing live owner prevented arm, rewake, epoch write, or lock replacement. |
 | Codex | `FM_CODEX_LIVE_E2E=1 tests/fm-codex-continuity-live-e2e.test.sh` | The one-second foreground checkpoint returned without switching to the arm wrapper. |
 | OpenCode | `FM_OPENCODE_LIVE_E2E=1 tests/fm-opencode-primary-live-e2e.test.sh` | A verified successor existed before prompt handling, with no model re-arm or turn-end fallback. |
-| Pi | `FM_PI_LIVE_E2E=1 tests/fm-pi-primary-live-e2e.test.sh` | One initial tool call led to extension-owned successors and clean child retirement on exit. |
+| Pi | `FM_PI_HEADLESS_REARM_E2E=1 tests/fm-pi-primary-live-e2e.test.sh`; `FM_PI_LIVE_E2E=1 tests/fm-pi-primary-live-e2e.test.sh` | A headless real-provider run keeps empty recovery to one agent run with no synthetic follow-up; the interactive path covers extension-owned successors, same-process replacement, one real-wake delivery, and clean child retirement. |
 | Grok | `FM_GROK_LIVE_E2E=1 tests/fm-grok-continuity-live-e2e.test.sh` | Native task completion surfaced the actionable close and the cycle ledger recorded `reason=actionable-signal`. |
 
 Pi 0.81.1 repeated the continuity and clean-exit lifecycle on 2026-07-23 after the Calm presentation changes.
@@ -446,20 +446,49 @@ Observed guarantee: after ordinary `session_shutdown` for `/new`, `/resume`, and
 Stale prior-generation tool callbacks could not mutate the active child, repeated transitions kept exactly one live arm cycle, and terminal `quit` still refused late rearm.
 Plain Pi and pi-signed share the same tracked `.pi/extensions/fm-primary-pi-watch.ts` path, so both inherit the generation owner; other primary harnesses are not applicable because they do not use this Pi extension lifecycle.
 
-The once-per-generation recovery bound and immediate handling-successor poll were verified on 2026-08-21 with the tracked Pi extension, real watcher processes, and an isolated home.
-The regression forced handling confirmation to fail, observed one recovery follow-up across the former repeat window, confirmed the successor remained live, and then proved a separate handling successor durably queued a crew event within the bounded poll window.
+The empty-recovery notification boundary, once-per-generation recovery bound, immediate handling-successor poll, and away-mode keyed-decision fold were verified on 2026-08-21 with real watcher processes and isolated homes.
+The portable Pi path performs an orderly session-generation replacement through the tracked extension, observes no follow-up for an empty durable queue, then delivers one real signal exactly once while the successor remains live.
+The recovery path also forces handling confirmation to fail, observes one durable recovery follow-up across the former repeat window, and proves a handling successor detects a real crew event promptly.
+The away-mode path buffers keyed decisions through the catch-all, resolves one before delivery while current progress is working, injects only the genuinely open key, and prunes the closed key from both current and legacy private buffer forms.
 
 ```sh
-bin/fm-test-run.sh tests/fm-watch-recovery-loop.test.sh
+bin/fm-test-run.sh \
+  tests/fm-watch-recovery-loop.test.sh \
+  tests/fm-watch-arm.test.sh \
+  tests/fm-daemon.test.sh \
+  tests/fm-wake-daemon-lifecycle-e2e.test.sh
 ```
 
 Observed output:
 
 ```text
+ok - an empty Pi replacement stays silent and the next real wake is delivered once
 ok - a resurfacing handling successor stays alive and supervises instead of going blind
 ok - unacknowledged recovery is announced at most once per generation and the successor stays alive
-FM_TEST_SUMMARY total=1 failed=0 skipped_gate=0 duration_ms=59357
+ok - watch-arm: empty re-arm stays silent while later durable work and open decisions remain reliable
+ok - catch-all folds keyed open/resolved decisions and prunes delayed closed entries
+ok - lifecycle: keyed catch-all prunes resolved work and injects a genuinely open decision once
+FM_TEST_SUMMARY total=4 failed=0 skipped_gate=0 duration_ms=162113
 ```
+
+The harness-dependent empty-recovery boundary was then verified against installed Pi 0.84.1 and the real `openai-codex/gpt-5.6-sol` provider in JSON mode with SSE transport.
+The disposable project used the tracked extension, a disposable Firstmate home with `pending:downtime:live-empty-proof` and no queue row, and the shared credential store without copying credentials.
+
+```sh
+FM_PI_HEADLESS_REARM_E2E=1 tests/fm-pi-primary-live-e2e.test.sh
+```
+
+Observed output:
+
+```text
+ok - Pi 0.84.1 headless empty recovery: agent_starts=1 tool_calls=1 rearm_followups=0
+```
+
+Pi and pi-signed share this tracked extension path.
+OpenCode shares the arm-layer recovery contract but not Pi's `sendUserMessage` transport, and its deterministic close-handler cases remain in `tests/fm-pi-watch-extension.test.sh`.
+Claude, Cursor, Grok, and Codex do not use Pi's follow-up delivery, but their arm or checkpoint paths inherit the same queue-atomic empty-recovery rule from `bin/fm-watch.sh` and `bin/fm-wake-lib.sh`; the relevant auto-arm, park, background, and checkpoint suites remain their verification owners.
+The queue decision reads no worker endpoint, so tmux, Herdr, Zellij, Orca, and cmux task backends need no adapter change.
+Away-mode decision revalidation applies to its supported tmux and Herdr supervisor transports before either injection primitive runs; unsupported away-mode supervisor backends remain unchanged.
 
 Deterministic entry points:
 
@@ -470,6 +499,8 @@ tests/fm-watcher-lock.test.sh
 tests/fm-watch-arm.test.sh
 tests/fm-watch-recovery-loop.test.sh
 tests/fm-wake-queue.test.sh
+tests/fm-daemon.test.sh
+tests/fm-wake-daemon-lifecycle-e2e.test.sh
 tests/fm-subagent-pretool-check.test.sh
 tests/fm-claude-stop-autoarm.test.sh
 tests/fm-turnend-guard.test.sh

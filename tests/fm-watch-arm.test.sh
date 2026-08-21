@@ -242,7 +242,7 @@ test_attached_arm_still_fails_on_a_wake_it_did_not_deliver() {
 }
 
 test_rearm_resurfaces_durable_queue_and_remote_open_decision() {
-  local dir home state fakebin result armout drainout status watcher_pid sequence generation decision_recovery_arm decision_successor
+  local dir home state fakebin result armout drainout status watcher_pid sequence generation
   dir=$(make_case rearm-resurface)
   home="$dir/home"
   state="$dir/state"
@@ -321,52 +321,47 @@ test_rearm_resurfaces_durable_queue_and_remote_open_decision() {
   start_rearm_arm "$home" "$state" "$fakebin" "$dir/recovery-successor-arm.out"
   is_live_non_zombie "$ARM_PID" || fail "recovery successor did not stay live after the drain"
 
-  # A later down interval can have no new queue rows at all. The unchanged
-  # remote decision must still trigger a recovery wake and be folded again.
+  # A later down interval has no new queue rows. The unchanged remote decision
+  # is already known and must not manufacture an empty recovery turn.
   kill "$ARM_PID" 2>/dev/null || true
   wait "$ARM_PID" 2>/dev/null || true
   start_rearm_arm "$home" "$state" "$fakebin" "$dir/decision-only-arm.out"
-  wait_for_exit "$ARM_PID" 80 || fail "decision-only re-arm did not surface the open decision"
-  decision_recovery_arm=$ARM_PID
-  start_rearm_arm "$home" "$state" "$fakebin" "$dir/decision-handling-successor.out" "$decision_recovery_arm"
-  is_live_non_zombie "$ARM_PID" || fail "decision handling successor re-triggered before the drain"
-  decision_successor=$ARM_PID
-  FM_HOME="$home" FM_STATE_OVERRIDE="$state" "$DRAIN" > "$dir/decision-only-drain.out" \
-    2> "$dir/decision-only-drain.err" || fail "decision-only drain after re-arm recovery failed"
-  grep -F 'ios [key=remote-signoff] needs-decision: remote secondmate is held for captain sign-off' \
-    "$dir/decision-only-drain.out" >/dev/null \
-    || fail "unchanged remote decision was not re-folded after a later down interval"
-  sequence=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through \([0-9][0-9]*\) --recovery-generation [A-Za-z0-9._-][A-Za-z0-9._-]*$/\1/p' "$dir/decision-only-drain.err")
-  generation=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through [0-9][0-9]* --recovery-generation \([A-Za-z0-9._-][A-Za-z0-9._-]*\)$/\1/p' "$dir/decision-only-drain.err")
-  [ "$sequence" = 0 ] && [ -n "$generation" ] \
-    || fail "decision-only recovery did not require generation-bound post-handling acknowledgement"
-  is_live_non_zombie "$decision_successor" \
-    || fail "decision-only drain spuriously re-triggered its live handling successor"
-  ! grep -F 'check: rearm-resurface' "$dir/decision-handling-successor.out" >/dev/null \
-    || fail "decision-only handling successor emitted recursive recovery"
+  sleep 1.2
+  is_live_non_zombie "$ARM_PID" || fail "empty re-arm exited only to repeat an already-known decision"
+  ! grep -F 'check: rearm-resurface' "$dir/decision-only-arm.out" >/dev/null \
+    || fail "empty re-arm emitted a synthetic recovery wake"
+  [ ! -s "$state/.wake-queue" ] || fail "empty re-arm created a durable queue row"
+  case "$(cat "$state/.watcher-down" 2>/dev/null || true)" in
+    acked:downtime:*) ;;
+    *) fail "empty re-arm did not retire its unpresented recovery episode" ;;
+  esac
 
-  kill -TERM "$decision_successor" 2>/dev/null || fail "could not interrupt decision handling successor"
-  wait "$decision_successor" 2>/dev/null || true
-  start_rearm_arm "$home" "$state" "$fakebin" "$dir/interrupted-decision-arm.out"
-  wait_for_exit "$ARM_PID" 80 || fail "interrupted decision handling was not recovered on successor re-arm"
-  grep -F 'check: rearm-resurface' "$dir/interrupted-decision-arm.out" >/dev/null \
-    || fail "successor did not re-surface the unacknowledged decision recovery"
-  FM_HOME="$home" FM_STATE_OVERRIDE="$state" "$DRAIN" > "$dir/replayed-decision-drain.out" \
-    2> "$dir/replayed-decision-drain.err" || fail "replayed decision recovery drain failed"
+  # The smallest counterfactual is one real durable row. It must wake the same
+  # live replacement exactly once, and the ordinary drain still carries the
+  # existing open decision alongside that new work.
+  append_wake "$state" check decision-trigger 'check: real work after quiet replacement' \
+    || fail "could not publish the real post-replacement wake"
+  wait_for_exit "$ARM_PID" 80 || fail "quiet replacement did not surface later real work"
+  grep -F 'check: rearm-resurface' "$dir/decision-only-arm.out" >/dev/null \
+    || fail "later durable work was not recovered"
+  FM_HOME="$home" FM_STATE_OVERRIDE="$state" "$DRAIN" > "$dir/decision-trigger-drain.out" \
+    2> "$dir/decision-trigger-drain.err" || fail "real post-replacement wake could not be drained"
+  grep "$(printf '\tcheck\tdecision-trigger\t')" "$dir/decision-trigger-drain.out" >/dev/null \
+    || fail "real post-replacement row was not presented"
   grep -F 'ios [key=remote-signoff] needs-decision: remote secondmate is held for captain sign-off' \
-    "$dir/replayed-decision-drain.out" >/dev/null \
-    || fail "interrupted decision recovery did not re-fold the open decision"
-  sequence=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through \([0-9][0-9]*\) --recovery-generation [A-Za-z0-9._-][A-Za-z0-9._-]*$/\1/p' "$dir/replayed-decision-drain.err")
-  generation=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through [0-9][0-9]* --recovery-generation \([A-Za-z0-9._-][A-Za-z0-9._-]*\)$/\1/p' "$dir/replayed-decision-drain.err")
-  [ "$sequence" = 0 ] && [ -n "$generation" ] \
-    || fail "replayed decision recovery omitted its current acknowledgement generation"
+    "$dir/decision-trigger-drain.out" >/dev/null \
+    || fail "ordinary actionable drain lost the existing open decision"
+  sequence=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through \([0-9][0-9]*\) --recovery-generation [A-Za-z0-9._-][A-Za-z0-9._-]*$/\1/p' "$dir/decision-trigger-drain.err")
+  generation=$(sed -n 's/^WAKE_ACK_REQUIRED:.*--ack-through [0-9][0-9]* --recovery-generation \([A-Za-z0-9._-][A-Za-z0-9._-]*\)$/\1/p' "$dir/decision-trigger-drain.err")
+  [ -n "$sequence" ] && [ -n "$generation" ] \
+    || fail "real post-replacement wake omitted its acknowledgement"
   FM_STATE_OVERRIDE="$state" "$DRAIN" --ack-through "$sequence" --recovery-generation "$generation" \
-    || fail "completed decision handling could not acknowledge current recovery"
+    || fail "real post-replacement wake could not be acknowledged"
   start_rearm_arm "$home" "$state" "$fakebin" "$dir/decision-successor-arm.out"
-  is_live_non_zombie "$ARM_PID" || fail "acknowledged decision recovery did not leave a live successor"
+  is_live_non_zombie "$ARM_PID" || fail "acknowledged real wake did not leave a live successor"
   kill "$ARM_PID" 2>/dev/null || true
   wait "$ARM_PID" 2>/dev/null || true
-  pass "watch-arm: re-arm surfaces every queued wake and an open remote decision after downtime"
+  pass "watch-arm: empty re-arm stays silent while later durable work and open decisions remain reliable"
 }
 
 test_marker_publish_failure_retains_recovery_evidence() {
@@ -393,10 +388,14 @@ test_marker_publish_failure_retains_recovery_evidence() {
   rmdir "$state/.watcher-down"
   armout="$dir/recovery-arm.out"
   start_rearm_arm "$home" "$state" "$fakebin" "$armout"
-  wait_for_exit "$ARM_PID" 80 || fail "stale-lock recovery did not surface downtime"
-  grep -F 'check: rearm-resurface' "$armout" >/dev/null \
-    || fail "stale-lock recovery did not emit the recovery wake: $(cat "$armout")"
-  pass "watch-arm: marker publication failure retains stale-lock recovery evidence"
+  sleep 1.2
+  is_live_non_zombie "$ARM_PID" || fail "stale-lock recovery could not resume supervision"
+  ! grep -F 'check: rearm-resurface' "$armout" >/dev/null \
+    || fail "empty stale-lock recovery emitted a synthetic wake: $(cat "$armout")"
+  printf 'done: real wake after stale-lock recovery\n' > "$state/stale-lock-recovered.status"
+  wait_for_exit "$ARM_PID" 80 || fail "stale-lock recovery did not preserve later actionable delivery"
+  grep -q '^signal:' "$armout" || fail "stale-lock recovery lost the later real wake: $(cat "$armout")"
+  pass "watch-arm: marker publication failure recovers silently and preserves real delivery"
 }
 
 test_delivery_gap_wake_is_recovered_once() {
@@ -541,20 +540,17 @@ test_malformed_marker_is_quarantined_once() {
   printf 'foreign state\n' > "$state/.watcher-down/payload"
 
   start_rearm_arm "$home" "$state" "$fakebin" "$dir/recovery-arm.out"
-  wait_for_exit "$ARM_PID" 80 || fail "malformed marker did not produce a bounded recovery wake"
-  grep -F 'check: rearm-resurface' "$dir/recovery-arm.out" >/dev/null \
-    || fail "malformed marker did not emit the recovery wake"
+  sleep 1.2
+  is_live_non_zombie "$ARM_PID" || fail "malformed empty marker created a recovery turn"
+  ! grep -F 'check: rearm-resurface' "$dir/recovery-arm.out" >/dev/null \
+    || fail "malformed empty marker emitted a synthetic recovery wake"
   invalid_count=$(find "$state" -maxdepth 1 -type d -name '.watcher-down.invalid.*' | wc -l | tr -d '[:space:]')
   [ "$invalid_count" -eq 1 ] || fail "malformed marker was not quarantined exactly once"
-
-  FM_HOME="$home" FM_STATE_OVERRIDE="$state" "$DRAIN" > "$dir/recovery-drain.out" \
-    || fail "malformed-marker recovery drain failed"
-  ack_wakes "$state" || fail "malformed-marker handling acknowledgement failed"
-  start_rearm_arm "$home" "$state" "$fakebin" "$dir/stable-successor.out"
-  is_live_non_zombie "$ARM_PID" || fail "malformed marker caused a persistent recovery loop"
-  kill "$ARM_PID" 2>/dev/null || true
-  wait "$ARM_PID" 2>/dev/null || true
-  pass "watch-arm: malformed recovery state is quarantined without a successor loop"
+  printf 'done: real wake after malformed-marker repair\n' > "$state/malformed-repaired.status"
+  wait_for_exit "$ARM_PID" 80 || fail "malformed-marker repair lost later actionable work"
+  grep -q '^signal:' "$dir/recovery-arm.out" \
+    || fail "malformed-marker repair did not surface the later real wake"
+  pass "watch-arm: malformed empty recovery state is quarantined silently without losing real work"
 }
 
 test_recovery_consumption_serializes_queue_publication() {
@@ -603,13 +599,17 @@ test_restart_preserves_recovery_across_reused_pid_lock() {
   ln -s "$owner" "$state/.watch.lock"
 
   start_rearm_arm "$home" "$state" "$fakebin" "$armout"
-  wait_for_exit "$ARM_PID" 80 || fail "restart did not surface recovery after clearing a reused-pid lock"
-  grep -F 'check: rearm-resurface' "$armout" >/dev/null \
-    || fail "restart cleared reused-pid lock evidence without a recovery wake: $(cat "$armout")"
+  sleep 1.2
+  is_live_non_zombie "$ARM_PID" || fail "restart emitted an empty recovery after clearing a reused-pid lock"
+  ! grep -F 'check: rearm-resurface' "$armout" >/dev/null \
+    || fail "restart manufactured a wake from empty reused-pid evidence: $(cat "$armout")"
   is_live_non_zombie "$unrelated" || fail "restart signaled the unrelated process whose pid was reused"
+  printf 'done: real wake after reused-pid recovery\n' > "$state/reused-pid-recovered.status"
+  wait_for_exit "$ARM_PID" 80 || fail "restart lost later work after clearing a reused-pid lock"
+  grep -q '^signal:' "$armout" || fail "restart did not surface later real work: $(cat "$armout")"
   kill "$unrelated" 2>/dev/null || true
   wait "$unrelated" 2>/dev/null || true
-  pass "watch-arm: restart publishes recovery before clearing a reused-pid watcher lock"
+  pass "watch-arm: restart clears reused-pid evidence silently and preserves later work"
 }
 
 test_markerless_legacy_queue_is_recovered_on_arm() {
