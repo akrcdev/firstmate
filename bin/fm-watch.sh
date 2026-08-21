@@ -879,7 +879,7 @@ WATCHER_RECOVERY_PENDING=0
 recovery_empty_policy=present
 if [ "${FM_WATCH_HANDLING_SUCCESSOR:-0}" != 1 ]; then
   if [ "${FM_WATCH_EXTENSION_OWNER:-}" = pi ] \
-    && [ -z "${FM_LOCK_RECOVERED_PID:-}" ] \
+    && [ "${FM_LOCK_RECOVERED:-false}" != true ] \
     && [ "${FM_WATCH_ABNORMAL_RECOVERY:-0}" != 1 ]; then
     recovery_empty_policy=retire
   fi

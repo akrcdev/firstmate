@@ -831,7 +831,7 @@ test_signal_delivers_identical_reopening_once() {
   pass "signal delivery retires task identity before same-line task reuse"
 }
 
-test_resolution_append_serializes_with_delivery() {
+test_codexapp_resolution_append_serializes_with_delivery() {
   local dir state buffer status sent ready done resolver_rc
   dir=$(make_supercase resolution-delivery-race)
   state="$dir/state"
@@ -878,7 +878,7 @@ test_resolution_append_serializes_with_delivery() {
   grep -F 'resolved [key=route]: worker answer raced delivery' "$status" >/dev/null \
     || fail "resolved append did not land after delivery released its snapshot"
   [ ! -s "$buffer" ] || fail "successful locked delivery left its buffer behind"
-  pass "worker status transitions serialize with the complete delivery snapshot"
+  pass "Codex Desktop status returns serialize with the complete delivery snapshot"
 }
 
 test_decision_reconciliation_distinguishes_retirement_from_unsafe_state() {
@@ -2233,4 +2233,4 @@ test_inject_msg_herdr_submits_through_backend_dispatch
 test_inject_msg_defers_on_dead_shell_unknown
 test_inject_msg_defers_on_unrecognized_composer_state
 test_stale_resolution_race_suppresses_snapshot
-test_resolution_append_serializes_with_delivery
+test_codexapp_resolution_append_serializes_with_delivery

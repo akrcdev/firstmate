@@ -88,6 +88,29 @@ test_stale_watch_lock_reclaimed() {
   pass "killed watcher stale lock is reclaimed with an actionable warning"
 }
 
+test_missing_pid_watch_lock_recovery_is_actionable_for_pi() {
+  local dir state fakebin out pid
+  dir=$(make_case missing-pid-stale-lock)
+  state="$dir/state"
+  fakebin="$dir/fakebin"
+  out="$dir/watch.out"
+  mark_pr_check_migration_complete "$state"
+  mkdir "$state/.watch.lock"
+  touch -t 200001010000 "$state/.watch.lock"
+  PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" \
+    FM_WATCH_EXTENSION_OWNER=pi FM_POLL=5 FM_SIGNAL_GRACE=1 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 "$WATCH" > "$out" &
+  pid=$!
+  if ! wait_for_exit "$pid" 80; then
+    kill "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
+    fail "Pi-owned watcher silently retired malformed stale-lock recovery"
+  fi
+  grep -F 'check: rearm-resurface' "$out" >/dev/null \
+    || fail "missing-pid watcher loss was reclaimed without an actionable warning: $(cat "$out")"
+  pass "missing-pid watcher recovery stays actionable under Pi ownership"
+}
+
 test_live_stale_watch_lock_is_actionable() {
   local dir state fakebin out err status
   dir=$(make_case live-stale-lock)
@@ -1076,6 +1099,7 @@ test_pid_identity_is_locale_invariant
 test_proc_pid_identity_ignores_wall_clock_and_detects_pid_reuse
 test_msys_pid_identity_uses_proc
 test_stale_watch_lock_reclaimed
+test_missing_pid_watch_lock_recovery_is_actionable_for_pi
 test_stale_watch_reclaim_publishes_before_clear
 test_live_stale_watch_lock_is_actionable
 test_guard_warnings

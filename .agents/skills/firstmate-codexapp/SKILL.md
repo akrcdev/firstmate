@@ -60,10 +60,10 @@ That makes status writes a verified return-channel requirement, not a fact to as
 For a Firstmate-managed task, include an explicit status instruction:
 
 ```text
-Append supervisor-visible status lines to <absolute-firstmate-home>/state/<task-id>.status.
+Run '<absolute-firstmate-home>/bin/fm-status-append.sh' '<absolute-firstmate-home>/state/<task-id>.status' '<status-line>' for every supervisor-visible status change.
 Use only these prefixes for status changes: working:, needs-decision:, blocked:, paused:, done:, failed:.
 Use paused: only for a deliberate known external wait that should be rechecked later, never for a blocker that needs firstmate to act.
-Before doing substantive work, append "working: Codex Desktop thread started".
+Before doing substantive work, run '<absolute-firstmate-home>/bin/fm-status-append.sh' '<absolute-firstmate-home>/state/<task-id>.status' 'working: Codex Desktop thread started'.
 ```
 
 Verify the return channel before treating the thread as supervised:

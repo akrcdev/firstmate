@@ -811,6 +811,7 @@ fm_lock_try_acquire() {
   local lockdir=$1 pid steal cur rc steal_owner primary_owner
   FM_LOCK_HELD_PID=
   FM_LOCK_OWNER_DIR=
+  FM_LOCK_RECOVERED=false
   FM_LOCK_RECOVERED_PID=
 
   if fm_lock_try_create "$lockdir"; then
@@ -896,6 +897,7 @@ fm_lock_try_acquire() {
   rc=1
   if fm_lock_try_create "$lockdir" "$steal_owner"; then
     rc=0
+    FM_LOCK_RECOVERED=true
     # shellcheck disable=SC2034 # Read by sourcing callers after lock acquisition.
     FM_LOCK_RECOVERED_PID=$cur
   fi
