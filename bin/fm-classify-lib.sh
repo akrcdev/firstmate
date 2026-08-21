@@ -791,7 +791,7 @@ EOF
 }
 
 status_retire_presentation_task() {  # <state> <task-id>
-  local state=$1 task=$2 lock manifest tmp data row_task ident offset extra rc=0 found=0
+  local state=$1 task=$2 lock manifest tmp data row_task ident offset extra rc=0 found=0 seen
   lock="$state/.status-presentation-lock"
   manifest="$state/.status-presentation-cursor"
   tmp="$manifest.tmp.$$"
@@ -804,7 +804,12 @@ status_retire_presentation_task() {  # <state> <task-id>
   if [ ! -e "$state/$task.status" ] && [ ! -L "$state/$task.status" ] \
     && [ ! -e "$state/.$task.open-decisions-cursor" ] \
     && [ ! -L "$state/.$task.open-decisions-cursor" ]; then
-    if [ ! -e "$manifest" ] && [ ! -L "$manifest" ]; then
+    for seen in "$state"/.subsuper-seen-decision-*; do
+      [ -f "$seen" ] && [ ! -L "$seen" ] || continue
+      IFS=$(printf '\t') read -r row_task _ < "$seen" || true
+      [ "$row_task" != "$task" ] || found=1
+    done
+    if [ ! -e "$manifest" ] && [ ! -L "$manifest" ] && [ "$found" -eq 0 ]; then
       return 0
     fi
     if [ -f "$manifest" ] && [ -r "$manifest" ] && [ ! -L "$manifest" ] \
@@ -848,6 +853,13 @@ EOF
   fi
   if [ "$rc" -eq 0 ]; then
     rm -f -- "$state/$task.status" "$state/.$task.open-decisions-cursor" || rc=1
+  fi
+  if [ "$rc" -eq 0 ]; then
+    for seen in "$state"/.subsuper-seen-decision-*; do
+      [ -f "$seen" ] && [ ! -L "$seen" ] || continue
+      IFS=$(printf '\t') read -r row_task _ < "$seen" || true
+      [ "$row_task" != "$task" ] || rm -f -- "$seen" || rc=1
+    done
   fi
   fm_lock_release "$lock" || rc=1
   return "$rc"

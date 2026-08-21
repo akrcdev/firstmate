@@ -10,6 +10,10 @@ set -u
 # shellcheck source=tests/wake-helpers.sh
 . "$(dirname "${BASH_SOURCE[0]}")/wake-helpers.sh"
 
+TMP_ROOT=$(fm_test_tmproot fm-daemon-tests)
+FM_STATE_OVERRIDE="$TMP_ROOT/library-state" . "$ROOT/bin/fm-wake-lib.sh"
+unset FM_STATE_OVERRIDE
+
 DAEMON="$ROOT/bin/fm-supervise-daemon.sh"
 AFK_START="$ROOT/bin/fm-afk-start.sh"
 # Source the daemon's pure functions once. Its main loop is skipped under sourcing
@@ -21,7 +25,6 @@ if [ -z "${FM_TEST_DAEMON_SOURCED:-}" ]; then
   . "$DAEMON"
 fi
 
-TMP_ROOT=$(fm_test_tmproot fm-daemon-tests)
 FM_DAEMON_PRIMARY_HARNESS=claude
 export FM_DAEMON_PRIMARY_HARNESS
 
@@ -795,7 +798,7 @@ test_heartbeat_scan_folds_keyed_decisions_before_injection() {
 }
 
 test_signal_delivers_identical_reopening_once() {
-  local dir state buffer status retired
+  local dir state buffer status
   dir=$(make_supercase signal-identical-reopen)
   state="$dir/state"
   buffer="$state/.subsuper-escalations"
@@ -816,8 +819,8 @@ test_signal_delivers_identical_reopening_once() {
   [ "$(grep -Fc 'choose the release route' "$buffer")" -eq 1 ] \
     || fail "identical reopened decision was delivered more than once"
   : > "$buffer"
-  retired="$state/reopen.retired"
-  mv "$status" "$retired"
+  status_retire_presentation_task "$state" reopen \
+    || fail "task retirement failed before task-ID reuse"
   printf 'needs-decision [key=route]: choose the release route\n' > "$status"
   FM_STATE_OVERRIDE="$state" handle_wake "signal: $status" "$state"
   [ "$(grep -Fc 'choose the release route' "$buffer")" -eq 1 ] \
@@ -825,7 +828,58 @@ test_signal_delivers_identical_reopening_once() {
   FM_STATE_OVERRIDE="$state" handle_wake "signal: $status" "$state"
   [ "$(grep -Fc 'choose the release route' "$buffer")" -eq 1 ] \
     || fail "same-line decision from a reused task ID was delivered more than once"
-  pass "signal delivery keys deduplication to opening and file identity"
+  pass "signal delivery retires task identity before same-line task reuse"
+}
+
+test_resolution_append_serializes_with_delivery() {
+  local dir state buffer status sent ready done resolver_rc
+  dir=$(make_supercase resolution-delivery-race)
+  state="$dir/state"
+  buffer="$state/.subsuper-escalations"
+  status="$state/race.status"
+  sent="$dir/sent"
+  ready="$dir/ready"
+  done="$dir/done"
+  resolver_rc="$dir/resolver-rc"
+  printf 'needs-decision [key=route]: choose before delivery\n' > "$status"
+  FM_STATE_OVERRIDE="$state" handle_wake "signal: $status" "$state"
+  export FM_TEST_RACE_STATE="$state"
+  export FM_TEST_RACE_STATUS="$status"
+  export FM_TEST_RACE_SENT="$sent"
+  export FM_TEST_RACE_READY="$ready"
+  export FM_TEST_RACE_DONE="$done"
+  export FM_TEST_RACE_RESOLVER_RC="$resolver_rc"
+  inject_msg() {
+    (
+      local rc=0
+      : > "$FM_TEST_RACE_READY"
+      fm_wake_status_append_self_announced "$FM_TEST_RACE_STATE" "$FM_TEST_RACE_STATUS" \
+        'resolved [key=route]: answer raced delivery' || rc=$?
+      printf '%s\n' "$rc" > "$FM_TEST_RACE_RESOLVER_RC"
+      : > "$FM_TEST_RACE_DONE"
+    ) &
+    FM_TEST_RACE_RESOLVER_PID=$!
+    export FM_TEST_RACE_RESOLVER_PID
+    while [ ! -e "$FM_TEST_RACE_READY" ]; do sleep 0.01; done
+    sleep 0.1
+    [ ! -e "$FM_TEST_RACE_DONE" ] \
+      || fail "resolved append crossed the locked delivery snapshot"
+    grep -F 'resolved [key=route]' "$FM_TEST_RACE_STATUS" >/dev/null \
+      && fail "resolved append landed before the buffered decision was delivered"
+    printf '%s\n' "$1" > "$FM_TEST_RACE_SENT"
+    return 0
+  }
+  FM_STATE_OVERRIDE="$state" escalate_flush "$state" \
+    || fail "locked escalation delivery failed"
+  wait "$FM_TEST_RACE_RESOLVER_PID" || fail "racing resolver process failed"
+  [ "$(cat "$resolver_rc")" -ne 2 ] \
+    || fail "racing resolved append failed after delivery released its snapshot"
+  grep -F 'choose before delivery' "$sent" >/dev/null \
+    || fail "genuinely open decision was lost during locked delivery"
+  grep -F 'resolved [key=route]: answer raced delivery' "$status" >/dev/null \
+    || fail "resolved append did not land after delivery released its snapshot"
+  [ ! -s "$buffer" ] || fail "successful locked delivery left its buffer behind"
+  pass "resolved appends serialize with the complete delivery snapshot"
 }
 
 test_decision_reconciliation_distinguishes_retirement_from_unsafe_state() {
@@ -2180,3 +2234,4 @@ test_inject_msg_herdr_submits_through_backend_dispatch
 test_inject_msg_defers_on_dead_shell_unknown
 test_inject_msg_defers_on_unrecognized_composer_state
 test_stale_resolution_race_suppresses_snapshot
+test_resolution_append_serializes_with_delivery

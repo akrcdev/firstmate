@@ -1295,23 +1295,37 @@ fm_wake_signal_seen_current() {  # <state> <file>
 # Returns 0 appended and self-announced, 1 appended but left for the watcher
 # (the safe direction), 2 the append itself failed.
 fm_wake_status_append_self_announced() {  # <state> <status-file> <line>
-  local state=$1 file=$2 line=$3 marker pre_sig='' post_sig pre_size post_size
+  local state=$1 file=$2 line=$3 marker pre_sig='' post_sig pre_size post_size rc=0
+  local lock="$1/.status-presentation-lock"
   local LC_ALL=C
+  fm_lock_acquire_wait "$lock" || return 2
   marker=$(fm_wake_signal_seen_path "$state" "$file")
   if [ -e "$file" ]; then
     pre_sig=$(fm_wake_signal_sig "$file") || pre_sig=''
   fi
-  printf '%s\n' "$line" >> "$file" || return 2
-  [ -n "$pre_sig" ] || return 1
-  [ "$(cat "$marker" 2>/dev/null)" = "$pre_sig" ] || return 1
-  post_sig=$(fm_wake_signal_sig "$file") || return 1
-  [ -n "$post_sig" ] || return 1
-  pre_size=${pre_sig%%:*}
-  post_size=${post_sig%%:*}
-  case "$pre_size$post_size" in ''|*[!0-9]*) return 1 ;; esac
-  [ "$post_size" -eq $((pre_size + ${#line} + 1)) ] || return 1
-  printf '%s' "$post_sig" > "$marker" 2>/dev/null || return 1
-  return 0
+  if ! printf '%s\n' "$line" >> "$file"; then
+    rc=2
+  elif [ -z "$pre_sig" ] || [ "$(cat "$marker" 2>/dev/null)" != "$pre_sig" ]; then
+    rc=1
+  elif ! post_sig=$(fm_wake_signal_sig "$file") || [ -z "$post_sig" ]; then
+    rc=1
+  else
+    pre_size=${pre_sig%%:*}
+    post_size=${post_sig%%:*}
+    case "$pre_size$post_size" in
+      ''|*[!0-9]*) rc=1 ;;
+      *)
+        if [ "$post_size" -ne $((pre_size + ${#line} + 1)) ] \
+          || ! printf '%s' "$post_sig" > "$marker" 2>/dev/null; then
+          rc=1
+        fi
+        ;;
+    esac
+  fi
+  if ! fm_lock_release "$lock"; then
+    [ "$rc" -eq 2 ] || rc=1
+  fi
+  return "$rc"
 }
 
 # Map one structurally valid signal key to its home-local status filename.

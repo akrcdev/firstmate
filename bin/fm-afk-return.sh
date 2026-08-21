@@ -142,6 +142,7 @@ return_guard() {
 
 return_reconcile() {
   local evidence blockers drain_err drained wake_ack_line wake_ack_through wake_ack_generation wedge escalations lifecycle_ok=1
+  local status_lock="$STATE/.status-presentation-lock"
   evidence=$(mktemp "$STATE/.afk-return-evidence.XXXXXX") || return 1
   blockers=$(mktemp "$STATE/.afk-return-blockers.XXXXXX") || { rm -f "$evidence"; return 1; }
   drain_err=$(mktemp "$STATE/.afk-return-drain.XXXXXX") || { rm -f "$evidence" "$blockers"; return 1; }
@@ -169,6 +170,11 @@ return_reconcile() {
   fi
   append_evidence wake "$drained" "$evidence"
 
+  fm_lock_acquire_wait "$status_lock" || {
+    rm -f "$evidence" "$blockers" "$drain_err"
+    return 1
+  }
+
   if [ -s "$STATE/.subsuper-inject-wedged" ]; then
     wedge=$(head -1 "$STATE/.subsuper-inject-wedged" 2>/dev/null || true)
     append_evidence wedge "$wedge" "$evidence"
@@ -185,22 +191,37 @@ return_reconcile() {
 
   scan_open_blockers > "$blockers"
   if [ "$lifecycle_ok" -ne 1 ] || [ -s "$blockers" ]; then
-    write_gate "$evidence" "$blockers" || { rm -f "$evidence" "$blockers" "$drain_err"; return 1; }
+    if ! write_gate "$evidence" "$blockers"; then
+      fm_lock_release "$status_lock" || true
+      rm -f "$evidence" "$blockers" "$drain_err"
+      return 1
+    fi
     printf 'fm-afk-return: catch-up must finish before the captain request\n' >&2
     print_evidence "$GATE" >&2
     print_blockers "$GATE" >&2
     printf 'fm-afk-return: handle each blocker now, or close it with resolved [key=...] and append a durable reclassification reason, then run bin/fm-afk-return.sh check\n' >&2
+    fm_lock_release "$status_lock" || true
     rm -f "$evidence" "$blockers" "$drain_err"
     return 3
   fi
 
   if ! print_evidence "$evidence"; then
     append_evidence lifecycle 'recovery evidence publication failed; retry catch-up before ordinary work' "$evidence"
-    write_gate "$evidence" "$blockers" || { rm -f "$evidence" "$blockers" "$drain_err"; return 1; }
+    if ! write_gate "$evidence" "$blockers"; then
+      fm_lock_release "$status_lock" || true
+      rm -f "$evidence" "$blockers" "$drain_err"
+      return 1
+    fi
     printf 'fm-afk-return: recovery evidence could not be published; catch-up remains pending\n' >&2
+    fm_lock_release "$status_lock" || true
     rm -f "$evidence" "$blockers" "$drain_err"
     return 3
   fi
+
+  fm_lock_release "$status_lock" || {
+    rm -f "$evidence" "$blockers" "$drain_err"
+    return 1
+  }
 
   if [ -n "$wake_ack_line" ] && ! printf '%s\n' "$wake_ack_line" >&2; then
     append_evidence lifecycle 'durable wake acknowledgement command publication failed; retry catch-up before ordinary work' "$evidence"
