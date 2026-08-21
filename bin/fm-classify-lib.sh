@@ -457,7 +457,7 @@ EOF
 # consumer.
 status_open_decisions_with_origin() {  # <status-file>
   local f=$1 line resolve held open='' line_number=0
-  [ -f "$f" ] && [ -r "$f" ] && [ ! -L "$f" ] || return 0
+  [ -f "$f" ] && [ -r "$f" ] && [ ! -L "$f" ] || return 1
   resolve=${FM_CLASSIFY_RESOLVE_VERB:-$FM_CLASSIFY_RESOLVE_VERB_DEFAULT}
   held=${FM_CLASSIFY_CAPTAIN_HELD_VERB:-$FM_CLASSIFY_CAPTAIN_HELD_VERB_DEFAULT}
   while IFS= read -r line || [ -n "$line" ]; do

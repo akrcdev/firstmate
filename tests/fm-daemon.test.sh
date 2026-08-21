@@ -794,6 +794,50 @@ test_heartbeat_scan_folds_keyed_decisions_before_injection() {
   pass "catch-all folds keyed open/resolved decisions and prunes delayed closed entries"
 }
 
+test_signal_delivers_identical_reopening_once() {
+  local dir state buffer status
+  dir=$(make_supercase signal-identical-reopen)
+  state="$dir/state"
+  buffer="$state/.subsuper-escalations"
+  status="$state/reopen.status"
+  printf 'needs-decision [key=route]: choose the release route\n' > "$status"
+  FM_STATE_OVERRIDE="$state" handle_wake "signal: $status" "$state"
+  [ "$(grep -Fc 'choose the release route' "$buffer")" -eq 1 ] \
+    || fail "initial keyed decision was not delivered exactly once"
+  : > "$buffer"
+  printf '%s\n' \
+    'resolved [key=route]: first route chosen' \
+    'needs-decision [key=route]: choose the release route' \
+    >> "$status"
+  FM_STATE_OVERRIDE="$state" handle_wake "signal: $status" "$state"
+  [ "$(grep -Fc 'choose the release route' "$buffer")" -eq 1 ] \
+    || fail "identical reopened decision was hidden by raw status deduplication"
+  FM_STATE_OVERRIDE="$state" handle_wake "signal: $status" "$state"
+  [ "$(grep -Fc 'choose the release route' "$buffer")" -eq 1 ] \
+    || fail "identical reopened decision was delivered more than once"
+  pass "signal delivery keys deduplication to each opening transition"
+}
+
+test_stale_resolution_race_suppresses_snapshot() {
+  local dir state status win decision
+  dir=$(make_supercase stale-resolution-race)
+  state="$dir/state"
+  status="$state/stale-race.status"
+  win="sess:fm-stale-race"
+  printf 'needs-decision [key=route]: choose before stale delivery\n' > "$status"
+  decision=$(FM_STATE_OVERRIDE="$state" classify_stale "$win" "$state")
+  export FM_TEST_STALE_RACE_DECISION="$decision"
+  export FM_TEST_STALE_RACE_STATUS="$status"
+  classify_stale() {
+    printf 'resolved [key=route]: choice landed during stale handling\n' >> "$FM_TEST_STALE_RACE_STATUS"
+    printf '%s' "$FM_TEST_STALE_RACE_DECISION"
+  }
+  FM_STATE_OVERRIDE="$state" handle_wake "stale: $win" "$state"
+  [ ! -s "$state/.subsuper-escalations" ] \
+    || fail "pre-resolution stale snapshot survived an authoritative empty fold"
+  pass "stale handling suppresses a decision resolved after classification"
+}
+
 test_handle_wake_routes_self_and_escalate() {
   local dir state
   dir=$(make_supercase handle)
@@ -2027,6 +2071,7 @@ test_escalate_batches_into_one_digest
 test_escalate_batch_age_uses_first_append
 test_heartbeat_scan_dedup
 test_heartbeat_scan_folds_keyed_decisions_before_injection
+test_signal_delivers_identical_reopening_once
 test_handle_wake_routes_self_and_escalate
 test_inject_skip_forces_self
 test_is_wake_reason_distinguishes_status_stdout
@@ -2095,3 +2140,4 @@ test_inject_msg_herdr_pane_gone_defers
 test_inject_msg_herdr_submits_through_backend_dispatch
 test_inject_msg_defers_on_dead_shell_unknown
 test_inject_msg_defers_on_unrecognized_composer_state
+test_stale_resolution_race_suppresses_snapshot

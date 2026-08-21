@@ -173,8 +173,13 @@ return_reconcile() {
     append_evidence wedge "$wedge" "$evidence"
   fi
   if [ -s "$STATE/.subsuper-escalations" ]; then
-    escalations=$(cat "$STATE/.subsuper-escalations" 2>/dev/null || true)
-    append_evidence escalation "$escalations" "$evidence"
+    if escalate_reconcile_decisions "$STATE"; then
+      escalations=$(escalate_render "$STATE" 2>/dev/null || true)
+      append_evidence escalation "$escalations" "$evidence"
+    else
+      append_evidence lifecycle 'buffered escalation revalidation failed; retry catch-up before ordinary work' "$evidence"
+      lifecycle_ok=0
+    fi
   fi
 
   scan_open_blockers > "$blockers"
@@ -226,6 +231,8 @@ main() {
   . "$SCRIPT_DIR/fm-wake-lib.sh"
   # shellcheck source=bin/fm-classify-lib.sh
   . "$SCRIPT_DIR/fm-classify-lib.sh"
+  # shellcheck source=bin/fm-escalation-lib.sh
+  . "$SCRIPT_DIR/fm-escalation-lib.sh"
 
   mkdir -p "$STATE" || return 1
   fm_lock_acquire_wait "$LOCK"

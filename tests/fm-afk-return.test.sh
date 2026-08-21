@@ -22,6 +22,7 @@ install_runner() {  # <case-dir>
   # fm-timeout-lib.sh: the shared hard bound fm-classify-lib.sh sources for the
   # wedge detector's bounded worktree write probe.
   cp "$ROOT/bin/fm-timeout-lib.sh" "$dir/bin/"
+  cp "$ROOT/bin/fm-escalation-lib.sh" "$dir/bin/"
   cat > "$dir/bin/fm-afk-launch.sh" <<'SH'
 #!/usr/bin/env bash
 [ "${1:-}" = stop ] || exit 2
@@ -199,6 +200,30 @@ EOF
   pass "needs-decision remains reportable without masquerading as a firstmate-actionable blocker"
 }
 
+test_return_revalidates_busy_buffer_before_presentation() {
+  local dir out
+  dir="$TMP_ROOT/busy-buffer-revalidation"
+  install_runner "$dir"
+  printf '%s\n' \
+    'needs-decision [key=closed]: stale buffered choice' \
+    'resolved [key=closed]: choice answered while composer was busy' \
+    > "$dir/home/state/closed-task.status"
+  printf 'needs-decision [key=open]: current captain choice\n' \
+    > "$dir/home/state/open-task.status"
+  printf '%s\n' \
+    $'decision\tclosed-task\tclosed\t1\tclosed-task.status: needs-decision [key=closed]: stale buffered choice' \
+    $'decision\topen-task\topen\t1\topen-task.status: needs-decision [key=open]: current captain choice' \
+    'done-task.status: done: ordinary completion' \
+    > "$dir/home/state/.subsuper-escalations"
+  date +%s > "$dir/home/state/.afk"
+  : > "$dir/home/state/.fake-drain"
+  out=$(run_return "$dir" begin) || fail "return catch-up rejected a revalidatable decision buffer: $out"
+  assert_not_contains "$out" 'stale buffered choice' "return catch-up presented a decision resolved while delivery was deferred"
+  assert_contains "$out" 'current captain choice' "return catch-up lost a genuinely open decision"
+  assert_contains "$out" 'ordinary completion' "return catch-up lost a non-decision escalation"
+  pass "return catch-up revalidates delayed decisions and preserves other escalations"
+}
+
 test_evidence_publication_failure_preserves_wake_for_redrain() {
   local dir out rc gate
   dir="$TMP_ROOT/evidence-publication-failure"
@@ -278,6 +303,7 @@ test_check_retries_recorded_terminal_teardown() {
 test_return_gate_orders_catchup_before_bearings
 test_explicit_reclassification_requires_durable_reason
 test_captain_decision_does_not_masquerade_as_firstmate_blocker
+test_return_revalidates_busy_buffer_before_presentation
 test_evidence_publication_failure_preserves_wake_for_redrain
 test_away_reentry_refuses_pending_return_gate
 test_check_retries_recorded_terminal_teardown
