@@ -44,7 +44,21 @@ if [ "${1:-}" = --ack-through ]; then
   exit 0
 fi
 if [ -s "$file" ]; then
-  cat "$file"
+  if [ "${FM_WAKE_DEFER_DECISION_PRESENTATION:-0}" = 1 ]; then
+    awk '
+      /^OPEN DECISIONS \(still open,/ { exit }
+      /: (needs-decision|blocked|resolved)( \[key=[^]]+\])?:/ { next }
+      { print }
+    ' "$file"
+  else
+    cat "$file"
+  fi
+  if [ -s "$FM_HOME/state/.fake-drain-resolve-after" ]; then
+    status=$(sed -n '1p' "$FM_HOME/state/.fake-drain-resolve-after")
+    line=$(sed -n '2p' "$FM_HOME/state/.fake-drain-resolve-after")
+    printf '%s\n' "$line" >> "$status"
+    rm -f "$FM_HOME/state/.fake-drain-resolve-after"
+  fi
   sequence=$(awk -F '\t' '$2 ~ /^[0-9]+$/ && $2 > max { max=$2 } END { print max + 0 }' "$file")
   printf 'WAKE_ACK_REQUIRED: after handling completes run bin/fm-wake-drain.sh --ack-through %s --recovery-generation fixture-generation\n' "$sequence" >&2
 fi
@@ -91,7 +105,7 @@ test_return_gate_orders_catchup_before_bearings() {
   printf 'fm away-mode inject WEDGED: 4555s undelivered\n' > "$dir/home/state/.subsuper-inject-wedged"
   {
     printf '1784074271\t2\tsignal\trepair-task.status\tsignal: synthetic status\n'
-    printf 'wake annotation: latest wake-EVENT observed at drain, not current state: repair-task.status: blocked synthetic dependency\n'
+    printf 'wake annotation: latest wake-EVENT observed at drain, not current state: repair-task.status: blocked [key=synthetic-dependency]: firstmate can refresh the synthetic token\n'
   } > "$dir/home/state/.fake-drain"
 
   set +e
@@ -103,11 +117,11 @@ test_return_gate_orders_catchup_before_bearings() {
   [ -s "$gate" ] || fail "return begin did not persist its fail-closed catch-up gate"
   assert_contains "$out" 'firstmate-actionable blocker: repair-task [key=synthetic-dependency]' "return output did not assign blocker remediation to Firstmate"
   grep -F $'evidence\twake\t1784074271' "$gate" >/dev/null || fail "drained wake evidence was not retained in the durable gate"
-  grep -F $'evidence\twake\twake annotation: latest wake-EVENT observed at drain, not current state: repair-task.status: blocked synthetic dependency' "$gate" >/dev/null \
-    || fail "the separate drain annotation was not retained as away-return evidence"
+  grep -F $'evidence\twake\twake annotation: latest wake-EVENT observed at drain, not current state: repair-task.status: blocked' "$gate" >/dev/null \
+    && fail "decision-bearing drain annotation was persisted as generic wake evidence"
   grep -F $'evidence\twedge\tfm away-mode inject WEDGED: 4555s undelivered' "$gate" >/dev/null || fail "wedge evidence was not retained in the durable gate"
-  grep -F $'evidence\tescalation\trepair-task.status: blocked [key=synthetic-dependency]: firstmate can refresh the synthetic token' "$gate" >/dev/null \
-    || fail "buffered escalation evidence was not retained in the durable gate"
+  grep -F $'evidence\tdecision\trepair-task.status: blocked [key=synthetic-dependency]: firstmate can refresh the synthetic token' "$gate" >/dev/null \
+    || fail "authoritatively rebuilt decision evidence was not retained in the durable gate"
   [ "$(wc -l < "$dir/home/stop.log" | tr -d ' ')" -eq 1 ] || fail "return begin did not stop away mode exactly once"
   [ -s "$dir/home/state/.fake-drain" ] || fail "blocked return acknowledged its emitted wake before handling completed"
   [ ! -e "$dir/home/state/.fake-drain-acks" ] || fail "blocked return crossed the post-handling acknowledgement boundary"
@@ -132,12 +146,12 @@ test_return_gate_orders_catchup_before_bearings() {
   wake_count=$(grep -c $'^evidence\twake\t1784074271' "$gate" || true)
   [ "$wake_count" -eq 1 ] || fail "repeated begin duplicated retained wake evidence ($wake_count copies)"
   [ "$(grep -c $'^evidence\twedge\t' "$gate" || true)" -eq 1 ] || fail "repeated begin duplicated retained wedge evidence"
-  [ "$(grep -c $'^evidence\tescalation\t' "$gate" || true)" -eq 1 ] || fail "repeated begin duplicated retained escalation evidence"
+  [ "$(grep -c $'^evidence\tdecision\t' "$gate" || true)" -eq 1 ] || fail "repeated begin duplicated rebuilt decision evidence"
 
   printf 'resolved [key=synthetic-dependency]: refreshed the synthetic token and resumed the task\n' >> "$dir/home/state/repair-task.status"
   out=$(run_return "$dir" check) || fail "resolved blocker did not clear return catch-up: $out"
-  assert_not_contains "$out" 'catch-up escalation: repair-task.status: blocked [key=synthetic-dependency]' \
-    "return retry resurfaced persisted escalation evidence after exact resolution"
+  assert_not_contains "$out" 'catch-up decision: repair-task.status: blocked [key=synthetic-dependency]' \
+    "return retry resurfaced persisted decision evidence after exact resolution"
   assert_contains "$out" 'catch-up clear' "successful check did not announce that ordinary work may proceed"
   [ ! -e "$gate" ] || fail "successful check left the return gate behind"
   [ ! -e "$dir/home/state/.subsuper-escalations" ] || fail "successful check left delivered escalation state behind"
@@ -228,6 +242,51 @@ test_return_revalidates_busy_buffer_before_presentation() {
   pass "return catch-up revalidates delayed decisions and preserves other escalations"
 }
 
+test_return_rebuilds_decision_bearing_wake_evidence() {
+  local dir out rc gate status
+  dir="$TMP_ROOT/decision-bearing-wake"
+  install_runner "$dir"
+  status="$dir/home/state/choice.status"
+  printf 'needs-decision [key=route]: choose the stale route\n' > "$status"
+  {
+    printf '1784074271\t4\tcheck\tnondecision\tcheck: durable non-decision evidence\n'
+    printf 'OPEN DECISIONS (still open, folded from the durable status logs - not just the latest line):\n'
+    printf 'choice [key=route] needs-decision: choose the stale route\n'
+    printf "OPEN DECISIONS: close one by answering it: bin/fm-send.sh <task> --resolve-key <key> '<answer>'\n"
+  } > "$dir/home/state/.fake-drain"
+  {
+    printf '%s\n' "$status"
+    printf 'resolved [key=route]: answer landed after drain snapshot\n'
+  } > "$dir/home/state/.fake-drain-resolve-after"
+
+  out=$(run_return "$dir" begin) || fail "initial return rejected a post-drain decision resolution: $out"
+  assert_not_contains "$out" 'choose the stale route' \
+    "initial return presented decision-bearing drain evidence after exact resolution"
+  assert_contains "$out" 'durable non-decision evidence' \
+    "initial return lost non-decision drain evidence while rebuilding decisions"
+
+  printf 'needs-decision [key=retry]: choose the retry route\n' >> "$status"
+  seed_live_blocker "$dir" tmux return-gate
+  printf '1784074272\t5\tsignal\tchoice.status\tsignal: choice.status\n' > "$dir/home/state/.fake-drain"
+  set +e
+  out=$(run_return "$dir" begin)
+  rc=$?
+  set -e
+  [ "$rc" -eq 3 ] || fail "retry fixture did not persist a blocked return gate: $out"
+  assert_contains "$out" 'choose the retry route' \
+    "blocked return lost a genuinely open decision"
+  gate="$dir/home/state/.afk-return-catchup"
+  [ -s "$gate" ] || fail "blocked return did not persist its retry gate"
+
+  printf 'resolved [key=retry]: retry decision answered\n' >> "$status"
+  printf 'resolved [key=return-gate]: blocker repaired\n' >> "$dir/home/state/repair-task.status"
+  out=$(run_return "$dir" check) || fail "resolved retry evidence did not clear: $out"
+  assert_not_contains "$out" 'choose the retry route' \
+    "return retry replayed persisted decision-bearing wake evidence"
+  [ ! -e "$gate" ] || fail "resolved decision-bearing retry left its return gate"
+  pass "away return rebuilds initial and retried decision evidence authoritatively"
+}
+
 test_evidence_publication_failure_preserves_wake_for_redrain() {
   local dir out rc gate
   dir="$TMP_ROOT/evidence-publication-failure"
@@ -308,6 +367,7 @@ test_return_gate_orders_catchup_before_bearings
 test_explicit_reclassification_requires_durable_reason
 test_captain_decision_does_not_masquerade_as_firstmate_blocker
 test_return_revalidates_busy_buffer_before_presentation
+test_return_rebuilds_decision_bearing_wake_evidence
 test_evidence_publication_failure_preserves_wake_for_redrain
 test_away_reentry_refuses_pending_return_gate
 test_check_retries_recorded_terminal_teardown

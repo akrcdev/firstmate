@@ -540,17 +540,21 @@ test_malformed_marker_is_quarantined_once() {
   printf 'foreign state\n' > "$state/.watcher-down/payload"
 
   start_rearm_arm "$home" "$state" "$fakebin" "$dir/recovery-arm.out"
-  sleep 1.2
-  is_live_non_zombie "$ARM_PID" || fail "malformed empty marker created a recovery turn"
-  ! grep -F 'check: rearm-resurface' "$dir/recovery-arm.out" >/dev/null \
-    || fail "malformed empty marker emitted a synthetic recovery wake"
+  wait_for_exit "$ARM_PID" 80 || fail "malformed recovery state did not surface an actionable warning"
+  grep -F 'check: rearm-resurface' "$dir/recovery-arm.out" >/dev/null \
+    || fail "malformed recovery state was retired as a healthy empty replacement"
   invalid_count=$(find "$state" -maxdepth 1 -type d -name '.watcher-down.invalid.*' | wc -l | tr -d '[:space:]')
   [ "$invalid_count" -eq 1 ] || fail "malformed marker was not quarantined exactly once"
+  start_rearm_arm "$home" "$state" "$fakebin" "$dir/repaired-arm.out"
+  sleep 1.2
+  is_live_non_zombie "$ARM_PID" || fail "valid replacement repeated the malformed recovery warning"
+  ! grep -F 'check: rearm-resurface' "$dir/repaired-arm.out" >/dev/null \
+    || fail "malformed recovery state warned more than once"
   printf 'done: real wake after malformed-marker repair\n' > "$state/malformed-repaired.status"
   wait_for_exit "$ARM_PID" 80 || fail "malformed-marker repair lost later actionable work"
-  grep -q '^signal:' "$dir/recovery-arm.out" \
+  grep -q '^signal:' "$dir/repaired-arm.out" \
     || fail "malformed-marker repair did not surface the later real wake"
-  pass "watch-arm: malformed empty recovery state is quarantined silently without losing real work"
+  pass "watch-arm: malformed recovery state warns once without losing later work"
 }
 
 test_recovery_consumption_serializes_queue_publication() {

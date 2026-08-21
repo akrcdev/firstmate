@@ -2190,7 +2190,7 @@ kimi_wait_for_delivery() {
 }
 
 kimi_spawn_fail() {  # <detail>
-  printf 'failed: %s\n' "$1" >> "$STATE/$ID.status"
+  fm_wake_status_append "$STATE" "$STATE/$ID.status" "failed: $1" || true
   echo "error: $1; inspect window $T" >&2
 }
 

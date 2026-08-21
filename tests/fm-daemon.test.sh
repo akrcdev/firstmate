@@ -843,7 +843,6 @@ test_resolution_append_serializes_with_delivery() {
   resolver_rc="$dir/resolver-rc"
   printf 'needs-decision [key=route]: choose before delivery\n' > "$status"
   FM_STATE_OVERRIDE="$state" handle_wake "signal: $status" "$state"
-  export FM_TEST_RACE_STATE="$state"
   export FM_TEST_RACE_STATUS="$status"
   export FM_TEST_RACE_SENT="$sent"
   export FM_TEST_RACE_READY="$ready"
@@ -853,8 +852,8 @@ test_resolution_append_serializes_with_delivery() {
     (
       local rc=0
       : > "$FM_TEST_RACE_READY"
-      fm_wake_status_append_self_announced "$FM_TEST_RACE_STATE" "$FM_TEST_RACE_STATUS" \
-        'resolved [key=route]: answer raced delivery' || rc=$?
+      "$ROOT/bin/fm-status-append.sh" "$FM_TEST_RACE_STATUS" \
+        'resolved [key=route]: worker answer raced delivery' || rc=$?
       printf '%s\n' "$rc" > "$FM_TEST_RACE_RESOLVER_RC"
       : > "$FM_TEST_RACE_DONE"
     ) &
@@ -872,14 +871,14 @@ test_resolution_append_serializes_with_delivery() {
   FM_STATE_OVERRIDE="$state" escalate_flush "$state" \
     || fail "locked escalation delivery failed"
   wait "$FM_TEST_RACE_RESOLVER_PID" || fail "racing resolver process failed"
-  [ "$(cat "$resolver_rc")" -ne 2 ] \
+  [ "$(cat "$resolver_rc")" -eq 0 ] \
     || fail "racing resolved append failed after delivery released its snapshot"
   grep -F 'choose before delivery' "$sent" >/dev/null \
     || fail "genuinely open decision was lost during locked delivery"
-  grep -F 'resolved [key=route]: answer raced delivery' "$status" >/dev/null \
+  grep -F 'resolved [key=route]: worker answer raced delivery' "$status" >/dev/null \
     || fail "resolved append did not land after delivery released its snapshot"
   [ ! -s "$buffer" ] || fail "successful locked delivery left its buffer behind"
-  pass "resolved appends serialize with the complete delivery snapshot"
+  pass "worker status transitions serialize with the complete delivery snapshot"
 }
 
 test_decision_reconciliation_distinguishes_retirement_from_unsafe_state() {

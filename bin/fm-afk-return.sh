@@ -52,7 +52,7 @@ EOF
 preserve_evidence() {  # <destination>
   local destination=$1
   [ -f "$GATE" ] || return 0
-  awk -F '\t' '$1 == "evidence" && $2 != "escalation"' "$GATE" \
+  awk -F '\t' '$1 == "evidence" && $2 != "wake" && $2 != "decision" && $2 != "escalation"' "$GATE" \
     >> "$destination" 2>/dev/null || true
 }
 
@@ -141,7 +141,7 @@ return_guard() {
 }
 
 return_reconcile() {
-  local evidence blockers drain_err drained wake_ack_line wake_ack_through wake_ack_generation wedge escalations lifecycle_ok=1
+  local evidence blockers drain_err drained wake_ack_line wake_ack_through wake_ack_generation wedge escalations decisions lifecycle_ok=1
   local status_lock="$STATE/.status-presentation-lock"
   evidence=$(mktemp "$STATE/.afk-return-evidence.XXXXXX") || return 1
   blockers=$(mktemp "$STATE/.afk-return-blockers.XXXXXX") || { rm -f "$evidence"; return 1; }
@@ -155,7 +155,7 @@ return_reconcile() {
     fi
   fi
 
-  drained=$("$SCRIPT_DIR/fm-wake-drain.sh" 2> "$drain_err") || {
+  drained=$(FM_WAKE_DEFER_DECISION_PRESENTATION=1 "$SCRIPT_DIR/fm-wake-drain.sh" 2> "$drain_err") || {
     append_evidence lifecycle 'durable wake drain failed; retry catch-up before ordinary work' "$evidence"
     lifecycle_ok=0
     drained=""
@@ -181,12 +181,18 @@ return_reconcile() {
   fi
   if [ -s "$STATE/.subsuper-escalations" ]; then
     if escalate_reconcile_decisions "$STATE"; then
-      escalations=$(escalate_render "$STATE" 2>/dev/null || true)
+      escalations=$(escalate_render_nondecisions "$STATE" 2>/dev/null || true)
       append_evidence escalation "$escalations" "$evidence"
     else
       append_evidence lifecycle 'buffered escalation revalidation failed; retry catch-up before ordinary work' "$evidence"
       lifecycle_ok=0
     fi
+  fi
+  if decisions=$(decision_current_displays "$STATE"); then
+    append_evidence decision "$decisions" "$evidence"
+  else
+    append_evidence lifecycle 'open decision revalidation failed; retry catch-up before ordinary work' "$evidence"
+    lifecycle_ok=0
   fi
 
   scan_open_blockers > "$blockers"

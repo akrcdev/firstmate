@@ -123,6 +123,26 @@ EOF
   return "$found"
 }
 
+decision_current_displays() {  # <state>
+  local state=$1 status task key verb note origin rc
+  for status in "$state"/*.status; do
+    if [ ! -e "$status" ] && [ ! -L "$status" ]; then continue; fi
+    [ -f "$status" ] && [ ! -L "$status" ] || return 2
+    task=${status##*/}
+    task=${task%.status}
+    case "$task" in ''|*[!A-Za-z0-9._-]*) return 2 ;; esac
+    if decision_current_records "$state" "$task"; then rc=0; else rc=$?; fi
+    [ "$rc" -eq 0 ] || return "$rc"
+    while IFS=$(printf '\t') read -r key verb note origin; do
+      [ -n "$key" ] && [ -n "$origin" ] || continue
+      decision_escalation_display "$task" "$key" "$verb" "$note"
+      printf '\n'
+    done <<EOF
+$FM_DECISION_CURRENT_RECORDS
+EOF
+  done
+}
+
 legacy_buffered_decision() {  # <state> <plain-buffer-row>
   local state=$1 row=$2 task line verb key rc
   FM_BUFFERED_DECISION_TASK=
@@ -201,5 +221,14 @@ escalate_render() {  # <state>
     $1 == "decision" && NF == 5 { printf "%s", $5; next }
     { printf "%s", $0 }
     END { if (NR > 0) print "" }
+  ' "$1/.subsuper-escalations"
+}
+
+escalate_render_nondecisions() {  # <state>
+  awk -F '\t' '
+    $1 == "decision" && NF == 5 { next }
+    shown > 0 { printf " | " }
+    { printf "%s", $0; shown++ }
+    END { if (shown > 0) print "" }
   ' "$1/.subsuper-escalations"
 }

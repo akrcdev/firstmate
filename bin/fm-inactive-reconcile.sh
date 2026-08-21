@@ -307,10 +307,9 @@ append_once() { # <path> <line>
   local path=$1 line=$2
   [ ! -L "$path" ] || return 1
   mkdir -p "$(dirname "$path")" || return 1
-  if grep -Fqx -- "$line" "$path" 2>/dev/null; then
-    return 0
-  fi
-  printf '%s\n' "$line" >> "$path"
+  local append_rc=0
+  fm_wake_status_append_once "${path%/*}" "$path" "$line" || append_rc=$?
+  [ "$append_rc" -eq 0 ] || [ "$append_rc" -eq 1 ]
 }
 
 report_to_parent() { # <self-id> <task> <state> <outcome-key> <fingerprint> <pr>

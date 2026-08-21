@@ -368,7 +368,7 @@ test_escalation_publication_failure_retries() {
   fm_pending_reply_send_recovery "$state" "$corr" || fail "recovery send failed"
   fm_pending_reply_mark_turn_completed "$state" "$corr" recovery
   rec=$(fm_pending_reply_path "$state" "$corr")
-  target="$state/escalation-target"
+  target="$state/escalation-target.status"
   mkdir -p "$target"
   fm_pending_reply_set "$rec" parent_status "$target" || fail "failed to set escalation target"
   if fm_pending_reply_maybe_escalate "$state" "$corr" 2>/dev/null; then

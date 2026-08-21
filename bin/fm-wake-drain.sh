@@ -102,6 +102,11 @@ print_unread_status_section() {
   while IFS=$(printf '\t') read -r task line; do
     [ -n "$task" ] || continue
     [ -n "$line" ] || continue
+    if [ "${FM_WAKE_DEFER_DECISION_PRESENTATION:-0}" = 1 ]; then
+      case "$(status_line_verb "$line")" in
+        needs-decision|blocked|resolved) continue ;;
+      esac
+    fi
     line="$task $line"
     if [ "$shown" -eq 0 ]; then
       printf 'UNREAD STATUS (new since last drain, not re-printed after this presentation):\n' || return 1
@@ -134,6 +139,7 @@ print_open_decisions_section() {
   local snapshot=${1:-} open task key verb note line item_bytes=220 global_bytes=4000
   local output='' used=0 shown=0 omitted=0 bytes
 
+  [ "${FM_WAKE_DEFER_DECISION_PRESENTATION:-0}" != 1 ] || return 0
   if [ -n "$snapshot" ]; then
     open=$(scan_open_decisions_snapshot "$STATE" "$snapshot") || return 1
   else
@@ -386,7 +392,14 @@ case "${FM_WAKE_DRAIN_TEST_DELAY_BEFORE_COMMIT:-0}" in
   *) sleep "$FM_WAKE_DRAIN_TEST_DELAY_BEFORE_COMMIT" ;;
 esac
 if [ -n "$RAW_ROWS" ]; then
-  printf '%s\n' "$RAW_ROWS" || exit "$?"
+  if [ "${FM_WAKE_DEFER_DECISION_PRESENTATION:-0}" = 1 ]; then
+    printf '%s\n' "$RAW_ROWS" | awk -F '\t' '
+      $5 ~ /(^|: )(needs-decision|blocked|resolved)( \[key=[^]]+\])?:/ { next }
+      { print }
+    ' || exit "$?"
+  else
+    printf '%s\n' "$RAW_ROWS" || exit "$?"
+  fi
 fi
 fm_recovery_marker_snapshot "$RECOVERY_MARKER" || exit 1
 RECOVERY_MARKER_TOKEN=$FM_RECOVERY_MARKER_TOKEN

@@ -669,21 +669,12 @@ _fm_recovery_marker_arm_check() {
       fm_lock_release "$FM_WAKE_QUEUE_LOCK"
       return 1
     fi
-    if [ "$empty_policy" = retire ] && [ ! -s "$FM_WAKE_QUEUE" ]; then
-      if ! _fm_recovery_marker_write_locked "$marker" downtime "" acked; then
-        fm_lock_release "$lock"
-        fm_lock_release "$FM_WAKE_QUEUE_LOCK"
-        return 1
-      fi
-      FM_RECOVERY_MARKER_ACTION='quiet'
-    else
-      if ! _fm_recovery_marker_write_locked "$marker" downtime "" announced; then
-        fm_lock_release "$lock"
-        fm_lock_release "$FM_WAKE_QUEUE_LOCK"
-        return 1
-      fi
-      FM_RECOVERY_MARKER_ACTION='recover'
+    if ! _fm_recovery_marker_write_locked "$marker" downtime "" announced; then
+      fm_lock_release "$lock"
+      fm_lock_release "$FM_WAKE_QUEUE_LOCK"
+      return 1
     fi
+    FM_RECOVERY_MARKER_ACTION='recover'
     fm_lock_release "$lock"
     fm_lock_release "$FM_WAKE_QUEUE_LOCK"
     return 0
@@ -1276,6 +1267,35 @@ fm_wake_signal_seen_current() {  # <state> <file>
   [ "$(cat "$(fm_wake_signal_seen_path "$1" "$2")" 2>/dev/null)" = "$sig" ]
 }
 
+_fm_wake_status_append_locked() {  # <status-file> <line>
+  [ ! -L "$1" ] || return 1
+  printf '%s\n' "$2" >> "$1"
+}
+
+fm_wake_status_append() {  # <state> <status-file> <line>
+  local state=$1 file=$2 line=$3 lock="$1/.status-presentation-lock" rc=0
+  case "$file" in "$state"/*.status) ;; *) return 2 ;; esac
+  case "$line" in *$'\n'*|*$'\r'*) return 2 ;; esac
+  fm_lock_acquire_wait "$lock" || return 1
+  _fm_wake_status_append_locked "$file" "$line" || rc=1
+  fm_lock_release "$lock" || rc=1
+  return "$rc"
+}
+
+fm_wake_status_append_once() {  # <state> <status-file> <line>
+  local state=$1 file=$2 line=$3 lock="$1/.status-presentation-lock" rc=0
+  case "$file" in "$state"/*.status) ;; *) return 2 ;; esac
+  case "$line" in *$'\n'*|*$'\r'*) return 2 ;; esac
+  fm_lock_acquire_wait "$lock" || return 2
+  if grep -Fqx -- "$line" "$file" 2>/dev/null; then
+    rc=1
+  elif ! _fm_wake_status_append_locked "$file" "$line"; then
+    rc=2
+  fi
+  fm_lock_release "$lock" || rc=2
+  return "$rc"
+}
+
 # Guarded self-announced status append - the one dedup primitive for a status
 # line THIS home's own machinery writes as bookkeeping it has already presented
 # in the very turn or tick that writes it (an answerer-closes resolved line, a
@@ -1303,7 +1323,7 @@ fm_wake_status_append_self_announced() {  # <state> <status-file> <line>
   if [ -e "$file" ]; then
     pre_sig=$(fm_wake_signal_sig "$file") || pre_sig=''
   fi
-  if ! printf '%s\n' "$line" >> "$file"; then
+  if ! _fm_wake_status_append_locked "$file" "$line"; then
     rc=2
   elif [ -z "$pre_sig" ] || [ "$(cat "$marker" 2>/dev/null)" != "$pre_sig" ]; then
     rc=1
@@ -1505,6 +1525,11 @@ EOF
     while IFS= read -r event_line || [ -n "$event_line" ]; do
       [ -n "$event_line" ] || continue
       event_line=$(printf '%s' "$event_line" | LC_ALL=C tr '\t\r' '  ')
+      if [ "${FM_WAKE_DEFER_DECISION_PRESENTATION:-0}" = 1 ]; then
+        case "$event_line" in
+          needs-decision:*|needs-decision\ \[key=*|blocked:*|blocked\ \[key=*|resolved:*|resolved\ \[key=*) continue ;;
+        esac
+      fi
       prefix="wake annotation: latest wake-EVENT observed at drain, not current state"
       if [ "$event_line" != "$last_event" ]; then
         prefix="wake annotation: unread wake-EVENT since last drain, not current state"
