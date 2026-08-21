@@ -795,7 +795,7 @@ test_heartbeat_scan_folds_keyed_decisions_before_injection() {
 }
 
 test_signal_delivers_identical_reopening_once() {
-  local dir state buffer status
+  local dir state buffer status retired
   dir=$(make_supercase signal-identical-reopen)
   state="$dir/state"
   buffer="$state/.subsuper-escalations"
@@ -815,7 +815,45 @@ test_signal_delivers_identical_reopening_once() {
   FM_STATE_OVERRIDE="$state" handle_wake "signal: $status" "$state"
   [ "$(grep -Fc 'choose the release route' "$buffer")" -eq 1 ] \
     || fail "identical reopened decision was delivered more than once"
-  pass "signal delivery keys deduplication to each opening transition"
+  : > "$buffer"
+  retired="$state/reopen.retired"
+  mv "$status" "$retired"
+  printf 'needs-decision [key=route]: choose the release route\n' > "$status"
+  FM_STATE_OVERRIDE="$state" handle_wake "signal: $status" "$state"
+  [ "$(grep -Fc 'choose the release route' "$buffer")" -eq 1 ] \
+    || fail "same-line decision from a reused task ID inherited retired deduplication"
+  FM_STATE_OVERRIDE="$state" handle_wake "signal: $status" "$state"
+  [ "$(grep -Fc 'choose the release route' "$buffer")" -eq 1 ] \
+    || fail "same-line decision from a reused task ID was delivered more than once"
+  pass "signal delivery keys deduplication to opening and file identity"
+}
+
+test_decision_reconciliation_distinguishes_retirement_from_unsafe_state() {
+  local dir state buffer status target
+  dir=$(make_supercase reconcile-retired-status)
+  state="$dir/state"
+  buffer="$state/.subsuper-escalations"
+  status="$state/retired.status"
+  printf 'needs-decision [key=route]: choose before teardown\n' > "$status"
+  FM_STATE_OVERRIDE="$state" handle_wake "signal: $status" "$state"
+  printf 'resolved [key=route]: choice completed before teardown\n' >> "$status"
+  rm "$status"
+  FM_STATE_OVERRIDE="$state" escalate_reconcile_decisions "$state" \
+    || fail "retired status file made buffered reconciliation fail"
+  [ ! -s "$buffer" ] || fail "retired status file left a closed decision buffered"
+
+  status="$state/unsafe.status"
+  target="$state/unsafe-target"
+  printf 'needs-decision [key=route]: preserve on unsafe read\n' > "$status"
+  FM_STATE_OVERRIDE="$state" handle_wake "signal: $status" "$state"
+  mv "$status" "$target"
+  ln -s "$target" "$status"
+  if FM_STATE_OVERRIDE="$state" escalate_reconcile_decisions "$state"; then
+    fail "unsafe status path was treated as an authoritative closure"
+  fi
+  grep -F 'preserve on unsafe read' "$buffer" >/dev/null \
+    || fail "unsafe status path discarded the buffered decision"
+  pass "decision reconciliation closes retired files and preserves unsafe reads"
 }
 
 test_stale_resolution_race_suppresses_snapshot() {
@@ -2072,6 +2110,7 @@ test_escalate_batch_age_uses_first_append
 test_heartbeat_scan_dedup
 test_heartbeat_scan_folds_keyed_decisions_before_injection
 test_signal_delivers_identical_reopening_once
+test_decision_reconciliation_distinguishes_retirement_from_unsafe_state
 test_handle_wake_routes_self_and_escalate
 test_inject_skip_forces_self
 test_is_wake_reason_distinguishes_status_stdout

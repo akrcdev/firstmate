@@ -52,7 +52,8 @@ EOF
 preserve_evidence() {  # <destination>
   local destination=$1
   [ -f "$GATE" ] || return 0
-  grep '^evidence'"$(printf '\t')" "$GATE" >> "$destination" 2>/dev/null || true
+  awk -F '\t' '$1 == "evidence" && $2 != "escalation"' "$GATE" \
+    >> "$destination" 2>/dev/null || true
 }
 
 scan_open_blockers() {  # -> tab-separated blocker rows

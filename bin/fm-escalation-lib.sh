@@ -14,18 +14,37 @@ decision_escalation_display() {  # <task> <key> <verb> <note>
 
 FM_DECISION_CURRENT_ORIGIN=
 FM_DECISION_CURRENT_DISPLAY=
+FM_DECISION_CURRENT_FILE_IDENT=
+FM_DECISION_CURRENT_RECORDS=
+decision_current_records() {  # <state> <task>
+  local state=$1 task=$2 status before after
+  status="$state/$task.status"
+  FM_DECISION_CURRENT_FILE_IDENT=
+  FM_DECISION_CURRENT_RECORDS=
+  if [ ! -e "$status" ] && [ ! -L "$status" ]; then
+    return 1
+  fi
+  before=$(_fm_open_decisions_file_ident "$status") || return 2
+  FM_DECISION_CURRENT_RECORDS=$(status_open_decisions_with_origin "$status") || return 2
+  after=$(_fm_open_decisions_file_ident "$status") || return 2
+  [ "$before" = "$after" ] || return 2
+  FM_DECISION_CURRENT_FILE_IDENT=$before
+  return 0
+}
+
 decision_current_record() {  # <state> <task> <key>
-  local state=$1 task=$2 wanted=$3 key verb note origin records
+  local state=$1 task=$2 wanted=$3 key verb note origin rc
   FM_DECISION_CURRENT_ORIGIN=
   FM_DECISION_CURRENT_DISPLAY=
-  records=$(status_open_decisions_with_origin "$state/$task.status") || return 2
+  if decision_current_records "$state" "$task"; then rc=0; else rc=$?; fi
+  [ "$rc" -eq 0 ] || return "$rc"
   while IFS=$(printf '\t') read -r key verb note origin; do
     [ "$key" = "$wanted" ] || continue
     FM_DECISION_CURRENT_ORIGIN=$origin
     FM_DECISION_CURRENT_DISPLAY=$(decision_escalation_display "$task" "$key" "$verb" "$note")
     return 0
   done <<EOF
-$records
+$FM_DECISION_CURRENT_RECORDS
 EOF
   return 1
 }
@@ -36,10 +55,10 @@ decision_seen_path() {  # <state> <task> <key>
   printf '%s/.subsuper-seen-decision-%s' "$state" "$digest"
 }
 
-mark_decision_seen() {  # <state> <task> <key> <origin> <display>
-  local state=$1 task=$2 key=$3 origin=$4 display=$5 seen
+mark_decision_seen() {  # <state> <task> <key> <file-ident> <origin> <display>
+  local state=$1 task=$2 key=$3 file_ident=$4 origin=$5 display=$6 seen
   seen=$(decision_seen_path "$state" "$task" "$key")
-  printf '%s\t%s\t%s\t%s\n' "$task" "$key" "$origin" "$display" > "$seen"
+  printf '%s\t%s\t%s\t%s\t%s\n' "$task" "$key" "$file_ident" "$origin" "$display" > "$seen"
 }
 
 decision_status_is_seen() {  # <state> <task> <status-line>
@@ -49,51 +68,57 @@ decision_status_is_seen() {  # <state> <task> <status-line>
   [ "$rc" -eq 2 ] && return 1
   [ "$rc" -eq 1 ] && return 0
   seen=$(decision_seen_path "$state" "$task" "$key")
-  [ "$(cut -f3 "$seen" 2>/dev/null || true)" = "$FM_DECISION_CURRENT_ORIGIN" ] \
-    && [ "$(cut -f4- "$seen" 2>/dev/null || true)" = "$FM_DECISION_CURRENT_DISPLAY" ]
+  [ "$(cut -f3 "$seen" 2>/dev/null || true)" = "$FM_DECISION_CURRENT_FILE_IDENT" ] \
+    && [ "$(cut -f4 "$seen" 2>/dev/null || true)" = "$FM_DECISION_CURRENT_ORIGIN" ] \
+    && [ "$(cut -f5- "$seen" 2>/dev/null || true)" = "$FM_DECISION_CURRENT_DISPLAY" ]
 }
 
 reconcile_decision_seen_markers() {  # <state>
-  local state=$1 seen task key origin display extra rc
+  local state=$1 seen task key file_ident origin display extra rc
   for seen in "$state"/.subsuper-seen-decision-*; do
     [ -e "$seen" ] || continue
-    IFS=$(printf '\t') read -r task key origin display extra < "$seen" || true
-    if [ -z "$task" ] || [ -z "$key" ] || [ -z "$origin" ] || [ -n "$extra" ]; then
+    IFS=$(printf '\t') read -r task key file_ident origin display extra < "$seen" || true
+    if [ -z "$task" ] || [ -z "$key" ] || [ -z "$file_ident" ] \
+      || [ -z "$origin" ] || [ -n "$extra" ]; then
       rm -f "$seen"
       continue
     fi
     if decision_current_record "$state" "$task" "$key"; then rc=0; else rc=$?; fi
     if [ "$rc" -eq 1 ] \
-      || { [ "$rc" -eq 0 ] && { [ "$FM_DECISION_CURRENT_ORIGIN" != "$origin" ] \
+      || { [ "$rc" -eq 0 ] && { [ "$FM_DECISION_CURRENT_FILE_IDENT" != "$file_ident" ] \
+        || [ "$FM_DECISION_CURRENT_ORIGIN" != "$origin" ] \
         || [ "$FM_DECISION_CURRENT_DISPLAY" != "$display" ]; }; }; then
       rm -f "$seen"
     fi
   done
 }
 
-escalate_add_decision() {  # <state> <task> <key> <verb> <note> <origin>
-  local state=$1 task=$2 key=$3 verb=$4 note=$5 origin=$6 display seen buf
+escalate_add_decision() {  # <state> <task> <key> <verb> <note> <origin> <file-ident>
+  local state=$1 task=$2 key=$3 verb=$4 note=$5 origin=$6 file_ident=$7 display seen buf
   display=$(decision_escalation_display "$task" "$key" "$verb" "$note")
   seen=$(decision_seen_path "$state" "$task" "$key")
-  if [ "$(cut -f3 "$seen" 2>/dev/null || true)" = "$origin" ] \
-    && [ "$(cut -f4- "$seen" 2>/dev/null || true)" = "$display" ]; then
+  if [ "$(cut -f3 "$seen" 2>/dev/null || true)" = "$file_ident" ] \
+    && [ "$(cut -f4 "$seen" 2>/dev/null || true)" = "$origin" ] \
+    && [ "$(cut -f5- "$seen" 2>/dev/null || true)" = "$display" ]; then
     return 0
   fi
   buf="$state/.subsuper-escalations"
   [ -s "$buf" ] || date +%s > "${buf}.since"
   printf 'decision\t%s\t%s\t%s\t%s\n' "$task" "$key" "$origin" "$display" >> "$buf"
-  mark_decision_seen "$state" "$task" "$key" "$origin" "$display"
+  mark_decision_seen "$state" "$task" "$key" "$file_ident" "$origin" "$display"
 }
 
 buffer_open_decisions_for_task() {  # <state> <task>
-  local state=$1 task=$2 key verb note origin records found=1
-  records=$(status_open_decisions_with_origin "$state/$task.status") || return 2
+  local state=$1 task=$2 key verb note origin rc found=1
+  if decision_current_records "$state" "$task"; then rc=0; else rc=$?; fi
+  [ "$rc" -eq 0 ] || return "$rc"
   while IFS=$(printf '\t') read -r key verb note origin; do
     [ -n "$key" ] && [ -n "$origin" ] || continue
-    escalate_add_decision "$state" "$task" "$key" "$verb" "$note" "$origin"
+    escalate_add_decision "$state" "$task" "$key" "$verb" "$note" "$origin" \
+      "$FM_DECISION_CURRENT_FILE_IDENT"
     found=0
   done <<EOF
-$records
+$FM_DECISION_CURRENT_RECORDS
 EOF
   return "$found"
 }
@@ -141,7 +166,8 @@ EOF
         printf 'decision\t%s\t%s\t%s\t%s\n' \
           "$task" "$key" "$FM_DECISION_CURRENT_ORIGIN" "$FM_DECISION_CURRENT_DISPLAY" >> "$tmp"
         mark_decision_seen "$state" "$task" "$key" \
-          "$FM_DECISION_CURRENT_ORIGIN" "$FM_DECISION_CURRENT_DISPLAY"
+          "$FM_DECISION_CURRENT_FILE_IDENT" "$FM_DECISION_CURRENT_ORIGIN" \
+          "$FM_DECISION_CURRENT_DISPLAY"
       else
         seen=$(decision_seen_path "$state" "$task" "$key")
         rm -f "$seen"
@@ -156,8 +182,8 @@ EOF
           "$FM_BUFFERED_DECISION_TASK" "$FM_BUFFERED_DECISION_KEY" \
           "$FM_BUFFERED_DECISION_ORIGIN" "$FM_BUFFERED_DECISION_DISPLAY" >> "$tmp"
         mark_decision_seen "$state" "$FM_BUFFERED_DECISION_TASK" \
-          "$FM_BUFFERED_DECISION_KEY" "$FM_BUFFERED_DECISION_ORIGIN" \
-          "$FM_BUFFERED_DECISION_DISPLAY"
+          "$FM_BUFFERED_DECISION_KEY" "$FM_DECISION_CURRENT_FILE_IDENT" \
+          "$FM_BUFFERED_DECISION_ORIGIN" "$FM_BUFFERED_DECISION_DISPLAY"
       fi
       continue
     fi
