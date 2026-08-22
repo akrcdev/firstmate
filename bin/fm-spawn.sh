@@ -1018,15 +1018,6 @@ if [ "$RELAUNCH" -eq 1 ]; then
   }
   RELAUNCH_PRIOR_HARNESS=$(fm_meta_get "$RELAUNCH_META" harness)
   RELAUNCH_STATUS_WRITER_PROTOCOL=$(fm_meta_get "$RELAUNCH_META" status_writer_protocol)
-  if [ "$RELAUNCH_STATUS_WRITER_PROTOCOL" != "$FM_STATUS_WRITER_PROTOCOL_CURRENT" ]; then
-    SPAWN_AFK_WRITER_LOCK="$STATE/.afk-status-writer.lock"
-    fm_lock_acquire_wait "$SPAWN_AFK_WRITER_LOCK"
-    SPAWN_AFK_WRITER_LOCK_HELD=1
-    if [ -e "$STATE/.afk" ] || [ -L "$STATE/.afk" ]; then
-      echo "error: task $ID uses a pre-version status writer; end away mode or migrate its return channel before relaunch" >&2
-      exit 1
-    fi
-  fi
   KIND=$(fm_meta_get "$RELAUNCH_META" kind)
   [ -n "$KIND" ] || KIND=ship
   MODE=$(fm_meta_get "$RELAUNCH_META" mode)
@@ -1674,6 +1665,20 @@ BRIEF_STATUS_WRITER_PROTOCOL=$(awk -v current="$FM_STATUS_WRITER_PROTOCOL_CURREN
   echo "error: $BRIEF declares an unsupported or ambiguous status-writer protocol" >&2
   exit 1
 }
+if [ "$RELAUNCH" -eq 1 ]; then
+  SPAWN_STATUS_WRITER_PROTOCOL=$RELAUNCH_STATUS_WRITER_PROTOCOL
+else
+  SPAWN_STATUS_WRITER_PROTOCOL=$BRIEF_STATUS_WRITER_PROTOCOL
+fi
+if [ "$SPAWN_STATUS_WRITER_PROTOCOL" != "$FM_STATUS_WRITER_PROTOCOL_CURRENT" ]; then
+  SPAWN_AFK_WRITER_LOCK="$STATE/.afk-status-writer.lock"
+  fm_lock_acquire_wait "$SPAWN_AFK_WRITER_LOCK"
+  SPAWN_AFK_WRITER_LOCK_HELD=1
+  if [ -e "$STATE/.afk" ] || [ -L "$STATE/.afk" ]; then
+    echo "error: task $ID uses a pre-version status writer; end away mode or migrate its brief and return channel before launch or relaunch" >&2
+    exit 1
+  fi
+fi
 
 delivery_rigor_rank() {  # <mode> -> 3 (most rigor) .. 1 (least); 0 = not a task mode
   case "$1" in

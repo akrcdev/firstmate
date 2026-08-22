@@ -855,6 +855,34 @@ test_normal_spawn_uses_brief_status_writer_protocol() {
   pass "normal spawn preserves legacy briefs and propagates generated writer protocols"
 }
 
+test_away_mode_refuses_normal_legacy_spawn() {
+  local rec legacy_id current_id out status
+  legacy_id=profile-afk-legacy-brief-z21
+  current_id=profile-afk-current-brief-z21
+  rec=$(make_spawn_case profile-afk-brief-protocol claude "$legacy_id")
+  read_case_record "$rec"
+  printf 'legacy brief for %s\n' "$legacy_id" > "$HOME_DIR/data/$legacy_id/brief.md"
+  touch "$HOME_DIR/state/.afk"
+
+  out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$legacy_id" "$PROJ_DIR")
+  status=$?
+  expect_code 1 "$status" "away mode should refuse normal spawn of a pre-protocol brief"
+  assert_contains "$out" "migrate its brief and return channel before launch or relaunch" \
+    "legacy normal-spawn refusal did not identify the safe recovery"
+  [ ! -s "$LAUNCH_LOG" ] || fail "legacy normal spawn delivered worker input during away mode"
+  assert_absent "$HOME_DIR/state/$legacy_id.meta" \
+    "legacy normal spawn published worker metadata during away mode"
+
+  FM_HOME="$HOME_DIR" "$ROOT/bin/fm-brief.sh" "$current_id" "$(basename "$PROJ_DIR")" \
+    --mode no-mistakes >/dev/null 2>&1
+  out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$current_id" "$PROJ_DIR")
+  status=$?
+  expect_code 0 "$status" "away mode should allow normal spawn of a synchronized brief"
+  grep -qx 'status_writer_protocol=fm-status-append.v1' "$HOME_DIR/state/$current_id.meta" \
+    || fail "versioned normal spawn lost its synchronized writer protocol during away mode"
+  pass "normal spawn blocks legacy writers and permits synchronized writers during away mode"
+}
+
 test_no_profile_keeps_claude_profile_defaults
 test_non_cursor_launch_clears_inherited_cursor_markers
 test_relative_home_overrides_launch_with_absolute_cross_process_paths
@@ -887,5 +915,6 @@ test_claude_omits_config_dir_prefix_when_unset
 test_non_claude_harness_ignores_config_dir
 test_active_dispatch_profile_does_not_block_secondmate_launch
 test_normal_spawn_uses_brief_status_writer_protocol
+test_away_mode_refuses_normal_legacy_spawn
 
 echo "# all fm-spawn-dispatch-profile tests passed"

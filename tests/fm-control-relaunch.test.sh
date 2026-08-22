@@ -344,7 +344,7 @@ test_away_mode_refuses_legacy_relaunch_but_allows_versioned_relaunch() {
   : > "$dir/fake/literal"
   out=$(run_spawn "$dir" rl38 --relaunch); rc=$?
   expect_code 1 "$rc" "legacy relaunch should refuse while away mode is active"$'\n'"$out"
-  assert_contains "$out" "end away mode or migrate its return channel before relaunch" \
+  assert_contains "$out" "end away mode or migrate its brief and return channel before launch or relaunch" \
     "legacy relaunch refusal did not identify the safe recovery"
   assert_no_grep "encode launch-brief" "$dir/fake/literal" \
     "legacy relaunch delivered worker input after away activation"
