@@ -982,6 +982,7 @@ FIRSTMATE_HOME=
 # validation teardown uses, so a malformed, ambiguous, or foreign record
 # refuses here exactly as it refuses there.
 RELAUNCH_PRIOR_HARNESS=
+RELAUNCH_STATUS_WRITER_PROTOCOL=
 if [ "$RELAUNCH" -eq 1 ]; then
   [ "${#POS[@]}" -eq 1 ] || {
     echo "error: --relaunch takes the task id only; its project or home comes from the task's own record" >&2
@@ -1010,6 +1011,7 @@ if [ "$RELAUNCH" -eq 1 ]; then
     exit 1
   }
   RELAUNCH_PRIOR_HARNESS=$(fm_meta_get "$RELAUNCH_META" harness)
+  RELAUNCH_STATUS_WRITER_PROTOCOL=$(fm_meta_get "$RELAUNCH_META" status_writer_protocol)
   KIND=$(fm_meta_get "$RELAUNCH_META" kind)
   [ -n "$KIND" ] || KIND=ship
   MODE=$(fm_meta_get "$RELAUNCH_META" mode)
@@ -2647,7 +2649,12 @@ preserve_relaunch_meta() {
   echo "project=$PROJ_ABS"
   echo "harness=$HARNESS"
   echo "kind=$KIND"
-  echo "status_writer_protocol=$FM_STATUS_WRITER_PROTOCOL_CURRENT"
+  if [ "$RELAUNCH" -eq 0 ]; then
+    echo "status_writer_protocol=$FM_STATUS_WRITER_PROTOCOL_CURRENT"
+  elif [ -n "$RELAUNCH_STATUS_WRITER_PROTOCOL" ] \
+    && [ "$RELAUNCH_STATUS_WRITER_PROTOCOL" != legacy-direct.retired ]; then
+    echo "status_writer_protocol=$RELAUNCH_STATUS_WRITER_PROTOCOL"
+  fi
   [ -z "$MODE" ] || echo "mode=$MODE"
   [ -z "$YOLO" ] || echo "yolo=$YOLO"
   echo "tasktmp=$TASK_TMP"

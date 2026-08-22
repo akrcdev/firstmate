@@ -297,6 +297,32 @@ test_relaunch_preserves_durable_task_metadata() {
   pass "fm-control relaunch: durable task metadata survives replacement launch publication"
 }
 
+test_relaunch_preserves_status_writer_protocol_generation() {
+  local dir current_dir out rc
+  dir=$(new_case legacy-writer rl36)
+  add_ship_task "$dir" rl36 claude
+  printf '%s\n' 'Report status with echo "{state}: {one short line}" >> state/rl36.status.' \
+    >> "$dir/home/data/rl36/brief.md"
+
+  out=$(run_control "$dir" rl36 relaunch --note "continue unchanged legacy work"); rc=$?
+  expect_code 0 "$rc" "legacy relaunch should succeed"$'\n'"$out"
+  [ -z "$(meta_field "$dir" rl36 status_writer_protocol)" ] \
+    || fail "an unchanged pre-version brief was falsely promoted to the synchronized writer"
+  assert_contains "$(cat "$dir/home/data/rl36/brief.md")" \
+    'Report status with echo "{state}: {one short line}" >> state/rl36.status.' \
+    "legacy relaunch replaced the direct-return contract without migrating the worker"
+
+  current_dir=$(new_case current-writer rl37)
+  add_ship_task "$current_dir" rl37 claude
+  printf 'status_writer_protocol=%s\n' 'fm-status-append.v1' \
+    >> "$current_dir/home/state/rl37.meta"
+  out=$(run_control "$current_dir" rl37 relaunch --note "continue synchronized work"); rc=$?
+  expect_code 0 "$rc" "versioned relaunch should succeed"$'\n'"$out"
+  [ "$(meta_field "$current_dir" rl37 status_writer_protocol)" = 'fm-status-append.v1' ] \
+    || fail "a versioned writer lost its synchronized protocol across relaunch"
+  pass "fm-control relaunch: status-writer protocol follows the unchanged worker generation"
+}
+
 test_relaunch_serializes_concurrent_durable_metadata_publication() {
   local dir control_pid link_pid rc i=0 traceparent prepare ready exported release
   dir=$(new_case metadata-race rl28)
@@ -1314,6 +1340,7 @@ test_spawn_relaunch_refuses_a_pane_outside_the_worktree() {
 
 test_same_harness_relaunch_keeps_identity_and_reuses_the_endpoint
 test_relaunch_preserves_durable_task_metadata
+test_relaunch_preserves_status_writer_protocol_generation
 test_relaunch_serializes_concurrent_durable_metadata_publication
 test_disabled_relaunch_clears_prior_trace_context
 test_relaunch_appends_the_progress_note_to_the_instructions

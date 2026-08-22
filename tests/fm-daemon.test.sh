@@ -93,7 +93,13 @@ case "${1:-}" in
   display-message)
     case "$*" in
       *pane_tty*) printf '\n' ;;
-      *pane_current_command*) printf '%s\n' "${FM_FAKE_TMUX_COMMAND:-zsh}" ;;
+      *pane_current_command*)
+        if [ "${FM_FAKE_TMUX_COMMAND+x}" = x ]; then
+          printf '%s\n' "$FM_FAKE_TMUX_COMMAND"
+        else
+          printf 'zsh\n'
+        fi
+        ;;
       *) printf 'fakepane\n' ;;
     esac
     exit 0
@@ -135,7 +141,7 @@ test_afk_start_blocks_live_local_preversion_writer_without_mutation() {
   [ "$status" -ne 0 ] || fail "live local pre-version writer unexpectedly activated away mode"
   cmp -s "$metadata_before" "$state/legacy-task.meta" \
     || fail "live pre-version writer metadata was mutated during compatibility preflight"
-  assert_contains "$out" "live local pre-version status writer legacy-task must finish or relaunch" \
+  assert_contains "$out" "live local pre-version status writer legacy-task must finish or migrate" \
     "live pre-version writer refusal did not explain the safe recovery"
   assert_not_contains "$out" "starting supervise daemon" \
     "live pre-version writer refusal continued into daemon activation"
@@ -164,6 +170,91 @@ test_afk_start_ignores_stopped_retained_preversion_record() {
   assert_contains "$out" "starting supervise daemon" \
     "stopped retained record incorrectly blocked activation"
   pass "stopped retained pre-version records do not block activation"
+}
+
+test_afk_start_allows_missing_local_preversion_endpoint() {
+  local dir home state out status
+  dir=$(make_supercase afk-start-missing-legacy-status-writer)
+  home="$dir/home"
+  state="$home/state"
+  mkdir -p "$state"
+  make_afk_status_writer_tmux_stub "$dir/fakebin"
+  write_afk_local_writer_meta "$home" missing-task
+
+  out=$(PATH="$dir/fakebin:$PATH" FM_FAKE_TMUX_WINDOW=other-task \
+    FM_FAKE_TMUX_COMMAND=claude FM_HOME="$home" FM_STATE_OVERRIDE="$state" \
+    FM_SUPERVISOR_BACKEND=unsupported "$AFK_START" 2>&1)
+  status=$?
+
+  [ "$status" -ne 0 ] || fail "unsupported daemon fixture unexpectedly activated away mode"
+  assert_contains "$out" "starting supervise daemon" \
+    "authoritatively missing pre-version endpoint incorrectly blocked activation"
+  pass "missing local pre-version endpoints do not block activation"
+}
+
+test_afk_start_blocks_uncertain_local_preversion_endpoints() {
+  local classification dir home state out status
+  for classification in ambiguous unreadable unverified; do
+    dir=$(make_supercase "afk-start-$classification-legacy-status-writer")
+    home="$dir/home"
+    state="$home/state"
+    mkdir -p "$state"
+    make_afk_status_writer_tmux_stub "$dir/fakebin"
+    case "$classification" in
+      ambiguous)
+        write_afk_local_writer_meta "$home" uncertain-task
+        out=$(PATH="$dir/fakebin:$PATH" FM_FAKE_TMUX_WINDOW=fm-uncertain-task \
+          FM_FAKE_TMUX_COMMAND=python FM_HOME="$home" FM_STATE_OVERRIDE="$state" \
+          FM_SUPERVISOR_BACKEND=unsupported "$AFK_START" 2>&1)
+        ;;
+      unreadable)
+        write_afk_local_writer_meta "$home" uncertain-task
+        out=$(PATH="$dir/fakebin:$PATH" FM_FAKE_TMUX_WINDOW=fm-uncertain-task \
+          FM_FAKE_TMUX_COMMAND= FM_HOME="$home" FM_STATE_OVERRIDE="$state" \
+          FM_SUPERVISOR_BACKEND=unsupported "$AFK_START" 2>&1)
+        ;;
+      unverified)
+        write_afk_local_writer_meta "$home" uncertain-task
+        sed 's/backend=tmux/backend=zellij/; s/window=fmses:fm-uncertain-task/window=firstmate:1/' \
+          "$state/uncertain-task.meta" \
+          > "$state/uncertain-task.meta.next"
+        printf '%s\n' 'zellij_session=firstmate' 'zellij_tab_id=1' 'zellij_pane_id=1' \
+          >> "$state/uncertain-task.meta.next"
+        mv "$state/uncertain-task.meta.next" "$state/uncertain-task.meta"
+        out=$(PATH="$dir/fakebin:$PATH" FM_HOME="$home" FM_STATE_OVERRIDE="$state" \
+          FM_SUPERVISOR_BACKEND=unsupported "$AFK_START" 2>&1)
+        ;;
+    esac
+    status=$?
+    [ "$status" -ne 0 ] || fail "$classification pre-version endpoint unexpectedly activated away mode"
+    assert_contains "$out" "uncertain endpoint state '$classification'" \
+      "$classification pre-version endpoint did not fail closed at activation"
+    assert_not_contains "$out" "starting supervise daemon" \
+      "$classification pre-version endpoint continued into daemon activation"
+  done
+  pass "ambiguous, unreadable, and unverified local pre-version endpoints block activation"
+}
+
+test_afk_start_blocks_unvalidated_local_preversion_endpoint() {
+  local dir home state out status
+  dir=$(make_supercase afk-start-invalid-legacy-status-writer)
+  home="$dir/home"
+  state="$home/state"
+  mkdir -p "$state"
+  write_afk_local_writer_meta "$home" invalid-task
+  sed -i.bak '/^project=/d' "$state/invalid-task.meta"
+  rm "$state/invalid-task.meta.bak"
+
+  out=$(FM_HOME="$home" FM_STATE_OVERRIDE="$state" FM_SUPERVISOR_BACKEND=unsupported \
+    "$AFK_START" 2>&1)
+  status=$?
+
+  [ "$status" -ne 0 ] || fail "unvalidated pre-version endpoint unexpectedly activated away mode"
+  assert_contains "$out" "has unreadable endpoint metadata" \
+    "unvalidated pre-version endpoint did not fail closed at activation"
+  assert_not_contains "$out" "starting supervise daemon" \
+    "unvalidated pre-version endpoint continued into daemon activation"
+  pass "unvalidated local pre-version endpoints block activation"
 }
 
 test_afk_start_ignores_remote_preversion_record() {
@@ -2290,6 +2381,9 @@ test_afk_start_ignores_stale_pidfile_without_lock
 test_afk_start_reclaims_stale_daemon_lock_reused_pid
 test_afk_start_blocks_live_local_preversion_writer_without_mutation
 test_afk_start_ignores_stopped_retained_preversion_record
+test_afk_start_allows_missing_local_preversion_endpoint
+test_afk_start_blocks_uncertain_local_preversion_endpoints
+test_afk_start_blocks_unvalidated_local_preversion_endpoint
 test_afk_start_ignores_remote_preversion_record
 test_afk_start_trusts_versioned_writer_despite_quoted_legacy_prose
 test_afk_start_rejects_future_writer_without_retirement

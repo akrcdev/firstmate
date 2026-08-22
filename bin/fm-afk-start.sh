@@ -158,13 +158,24 @@ fm_afk_status_writer_preflight() {
         return 1
         ;;
     esac
-    fm_backend_validate_task_endpoint "$meta" "$id" >/dev/null 2>&1 || continue
+    if ! fm_backend_validate_task_endpoint "$meta" "$id" >/dev/null 2>&1; then
+      echo "afk: local pre-version status writer $id has unreadable endpoint metadata; away mode remains inactive" >&2
+      return 1
+    fi
     backend=$FM_BACKEND_VALIDATED_BACKEND
     target=$FM_BACKEND_VALIDATED_TARGET
     state=$(fm_backend_agent_state "$backend" "$target" 2>/dev/null)
-    [ "$state" = alive ] || continue
-    echo "afk: live local pre-version status writer $id must finish or relaunch before away mode can start" >&2
-    return 1
+    case "$state" in
+      dead|missing) continue ;;
+      alive)
+        echo "afk: live local pre-version status writer $id must finish or migrate before away mode can start" >&2
+        return 1
+        ;;
+      *)
+        echo "afk: local pre-version status writer $id has uncertain endpoint state '$state'; away mode remains inactive" >&2
+        return 1
+        ;;
+    esac
   done
   return 0
 }
