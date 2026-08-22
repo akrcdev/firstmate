@@ -645,8 +645,21 @@ assert_present "$REMOTE_HOME/.fm-secondmate-home" "remote provisioning did not p
 assert_present "$REMOTE_HOME/projects/alpha/.git" "remote provisioning did not clone the project on that host"
 assert_grep "$REMOTE_HOME/state/parent-replies.status" "$REMOTE_HOME/data/charter.md" "remote charter did not use its append-only reply log"
 assert_no_grep "$PARENT/state/ios.status" "$REMOTE_HOME/data/charter.md" "remote charter retained the inaccessible local status path"
-assert_grep "$REMOTE_HOME/bin/fm-status-append.sh" "$REMOTE_HOME/data/charter.md" "remote charter did not use its remote status-transition owner"
+assert_grep "$REMOTE_ROOT/bin/fm-status-append.sh" "$REMOTE_HOME/data/charter.md" "remote charter did not use the preflighted remote status-transition owner"
+assert_no_grep "$REMOTE_HOME/bin/fm-status-append.sh" "$REMOTE_HOME/data/charter.md" "remote charter trusted the persistent home's potentially stale writer"
 assert_no_grep "$ROOT/bin/fm-status-append.sh" "$REMOTE_HOME/data/charter.md" "remote charter retained the inaccessible local status-transition owner"
+rm -f "$REMOTE_HOME/bin/fm-status-append.sh"
+out=$(FM_SECONDMATE_CHARTER='Own iOS delivery on the build Mac.' \
+  FM_SECONDMATE_SCOPE='iOS implementation and Xcode validation' \
+  remote_env "$ROOT/bin/fm-remote-home-seed.sh" ios remote-mac "$REMOTE_ROOT" "$REMOTE_HOME" alpha)
+assert_contains "$out" "home=remote-mac:$REMOTE_HOME" "reseed of an older remote home did not complete"
+assert_absent "$REMOTE_HOME/bin/fm-status-append.sh" "reseed unexpectedly depended on installing a writer into the older home"
+assert_grep "$REMOTE_ROOT/bin/fm-status-append.sh" "$REMOTE_HOME/data/charter.md" "reseed did not retain the preflighted remote writer"
+"$REMOTE_ROOT/bin/fm-status-append.sh" "$REMOTE_HOME/state/parent-replies.status" \
+  'working: reseeded return channel is executable' >/dev/null
+assert_grep 'working: reseeded return channel is executable' "$REMOTE_HOME/state/parent-replies.status" \
+  "reseeded remote return channel did not execute through the current code root"
+cp "$REMOTE_ROOT/bin/fm-status-append.sh" "$REMOTE_HOME/bin/fm-status-append.sh"
 if FM_SECONDMATE_CHARTER='Own iOS delivery on the build Mac.' \
   FM_SECONDMATE_SCOPE='iOS implementation and Xcode validation' \
   remote_env "$ROOT/bin/fm-remote-home-seed.sh" ios remote-mac "$REMOTE_ROOT" "$TMP_ROOT/other-home" alpha \

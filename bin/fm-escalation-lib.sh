@@ -156,7 +156,6 @@ legacy_buffered_decision() {  # <state> <plain-buffer-row>
   FM_BUFFERED_DECISION_KEY=
   FM_BUFFERED_DECISION_ORIGIN=
   FM_BUFFERED_DECISION_DISPLAY=
-  case "$row" in *" | "*) return 1 ;; esac
   task=${row%%.status:*}
   [ "$task" != "$row" ] || return 1
   case "$task" in ''|*[!A-Za-z0-9._-]*) return 1 ;; esac
@@ -174,8 +173,39 @@ legacy_buffered_decision() {  # <state> <plain-buffer-row>
   return 0
 }
 
+legacy_buffer_segments() {  # <plain-buffer-row>
+  printf '%s\n' "$1" | awk '
+    {
+      rest=$0
+      while (match(rest, / \| [A-Za-z0-9._-]+[.]status: /)) {
+        print substr(rest, 1, RSTART - 1)
+        rest=substr(rest, RSTART + 3)
+      }
+      print rest
+    }
+  '
+}
+
+reconcile_legacy_buffer_segment() {  # <state> <segment> <output>
+  local state=$1 segment=$2 output=$3 rc
+  if legacy_buffered_decision "$state" "$segment"; then rc=0; else rc=$?; fi
+  [ "$rc" -ne 2 ] || return 2
+  if [ "$rc" -eq 0 ]; then
+    if [ -n "$FM_BUFFERED_DECISION_DISPLAY" ]; then
+      printf 'decision\t%s\t%s\t%s\t%s\n' \
+        "$FM_BUFFERED_DECISION_TASK" "$FM_BUFFERED_DECISION_KEY" \
+        "$FM_BUFFERED_DECISION_ORIGIN" "$FM_BUFFERED_DECISION_DISPLAY" >> "$output"
+      mark_decision_seen "$state" "$FM_BUFFERED_DECISION_TASK" \
+        "$FM_BUFFERED_DECISION_KEY" "$FM_DECISION_CURRENT_FILE_IDENT" \
+        "$FM_BUFFERED_DECISION_ORIGIN" "$FM_BUFFERED_DECISION_DISPLAY"
+    fi
+    return 0
+  fi
+  printf '%s\n' "$segment" >> "$output"
+}
+
 escalate_reconcile_decisions() {  # <state>
-  local state=$1 buf tmp dedup row type task key origin display extra seen rc
+  local state=$1 buf tmp dedup row type task key origin display extra seen rc segments segment
   buf="$state/.subsuper-escalations"
   [ -s "$buf" ] || return 0
   tmp="$buf.reconcile.$$"
@@ -201,20 +231,14 @@ EOF
       fi
       continue
     fi
-    if legacy_buffered_decision "$state" "$row"; then rc=0; else rc=$?; fi
-    [ "$rc" -ne 2 ] || { rm -f "$tmp" "$dedup"; return 1; }
-    if [ "$rc" -eq 0 ]; then
-      if [ -n "$FM_BUFFERED_DECISION_DISPLAY" ]; then
-        printf 'decision\t%s\t%s\t%s\t%s\n' \
-          "$FM_BUFFERED_DECISION_TASK" "$FM_BUFFERED_DECISION_KEY" \
-          "$FM_BUFFERED_DECISION_ORIGIN" "$FM_BUFFERED_DECISION_DISPLAY" >> "$tmp"
-        mark_decision_seen "$state" "$FM_BUFFERED_DECISION_TASK" \
-          "$FM_BUFFERED_DECISION_KEY" "$FM_DECISION_CURRENT_FILE_IDENT" \
-          "$FM_BUFFERED_DECISION_ORIGIN" "$FM_BUFFERED_DECISION_DISPLAY"
-      fi
-      continue
-    fi
-    printf '%s\n' "$row" >> "$tmp"
+    segments=$(legacy_buffer_segments "$row") \
+      || { rm -f "$tmp" "$dedup"; return 1; }
+    while IFS= read -r segment || [ -n "$segment" ]; do
+      reconcile_legacy_buffer_segment "$state" "$segment" "$tmp" \
+        || { rm -f "$tmp" "$dedup"; return 1; }
+    done <<EOF
+$segments
+EOF
   done < "$buf"
   awk '!seen[$0]++' "$tmp" > "$dedup" || { rm -f "$tmp" "$dedup"; return 1; }
   mv -f "$dedup" "$buf" || { rm -f "$tmp" "$dedup"; return 1; }

@@ -1025,6 +1025,16 @@ test_heartbeat_scan_folds_keyed_decisions_before_injection() {
   ! grep -F 'review-fix-round-8' "$buffer" >/dev/null \
     || fail "legacy closed decision survived pre-injection reconciliation"
 
+  printf '%s\n' \
+    'closed-review.status: needs-decision [key=review-fix-round-8]: old review choice (catch-all scan) | progress.status: working: implementation remains active' \
+    >> "$buffer"
+  FM_STATE_OVERRIDE="$state" escalate_reconcile_decisions "$state" \
+    || fail "compound legacy buffer reconciliation failed"
+  ! grep -F 'review-fix-round-8' "$buffer" >/dev/null \
+    || fail "resolved decision survived inside a compound legacy buffer row"
+  grep -Fx 'progress.status: working: implementation remains active' "$buffer" >/dev/null \
+    || fail "compound reconciliation lost the genuine non-decision segment"
+
   # Resolving and reopening the same key with identical prose is a new decision,
   # identified by its later opening transition rather than text alone.
   : > "$buffer"

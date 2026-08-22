@@ -151,7 +151,7 @@ REG_EXISTED=0
 PARENT_STATUS="$STATE/$ID.status"
 REMOTE_STATUS="$REMOTE_HOME/state/parent-replies.status"
 PARENT_STATUS_APPEND="$FM_ROOT/bin/fm-status-append.sh"
-REMOTE_STATUS_APPEND="$REMOTE_HOME/bin/fm-status-append.sh"
+REMOTE_STATUS_APPEND="$REMOTE_ROOT/bin/fm-status-append.sh"
 while IFS= read -r line || [ -n "$line" ]; do
   line=${line//"$PARENT_STATUS"/"$REMOTE_STATUS"}
   printf '%s\n' "${line//"$PARENT_STATUS_APPEND"/"$REMOTE_STATUS_APPEND"}"
