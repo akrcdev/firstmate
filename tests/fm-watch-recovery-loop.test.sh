@@ -57,6 +57,174 @@ export const Type = {
 JS
 }
 
+# T0: an orderly Pi session replacement must retire only its empty recovery
+# episode, remain live, and deliver the next real event exactly once.
+test_empty_pi_replacement_stays_silent() {
+  local repo home plugin fakebin out status lock_pid messages
+  repo="$TMP_ROOT/t0-root"
+  home="$TMP_ROOT/t0-home"
+  fakebin="$TMP_ROOT/t0-fakebin"
+  mkdir -p "$repo/bin" "$home/state" "$home/config" "$fakebin"
+  install_pi_watch_extension_fixture "$repo"
+  plugin="$repo/.pi/extensions/fm-primary-pi-watch.ts"
+  cat > "$fakebin/tmux" <<'SH'
+#!/usr/bin/env bash
+exit 0
+SH
+  chmod +x "$fakebin/tmux"
+  cat > "$repo/bin/fm-watch-arm.sh" <<SH
+#!/usr/bin/env bash
+export FM_ROOT_OVERRIDE="$ROOT"
+export PATH="$fakebin:\$PATH"
+exec "$ROOT/bin/fm-watch-arm.sh" "\$@"
+SH
+  chmod +x "$repo/bin/fm-watch-arm.sh"
+  : > "$home/state/crew.meta"
+  out=$(
+    PLUGIN="$plugin" FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" \
+      FM_STATE_OVERRIDE="$home/state" PATH="$fakebin:$PATH" \
+      FM_POLL=1 FM_SIGNAL_GRACE=0 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 \
+      node --input-type=module 2>&1 <<'EOF'
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
+
+function makePi() {
+  const handlers = new Map();
+  let tool = null;
+  const prompts = [];
+  const pi = {
+    on(event, handler) {
+      handlers.set(event, handler);
+    },
+    registerCommand() {},
+    registerTool(candidate) {
+      if (candidate.name === "fm_watch_arm_pi") tool = candidate;
+    },
+    sendUserMessage: async (message) => {
+      prompts.push(String(message));
+    },
+  };
+  return { pi, handlers, prompts, getTool: () => tool };
+}
+
+function pidAlive(pid) {
+  try {
+    process.kill(Number(pid), 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function waitFor(predicate, label, attempts = 250) {
+  for (let i = 0; i < attempts; i += 1) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  const marker = existsSync(`${process.env.FM_HOME}/state/.watcher-down`)
+    ? readFileSync(`${process.env.FM_HOME}/state/.watcher-down`, "utf8").trim()
+    : "missing";
+  const watcherPid = existsSync(`${process.env.FM_HOME}/state/.watch.lock/pid`)
+    ? readFileSync(`${process.env.FM_HOME}/state/.watch.lock/pid`, "utf8").trim()
+    : "missing";
+  throw new Error(`timeout waiting for ${label} (marker=${marker} watcher=${watcherPid})`);
+}
+
+const lock = `${process.env.FM_HOME}/state/.lock`;
+writeFileSync(lock, `${process.pid}\n`);
+const mod = await import(pathToFileURL(process.env.PLUGIN).href);
+
+const initial = makePi();
+mod.default(initial.pi);
+await initial.handlers.get("session_start")?.({ type: "session_start", reason: "startup" }, {});
+const initialArm = await initial.getTool().execute("initial-arm", {}, undefined, undefined, {});
+if (!initialArm.details?.ok) throw new Error(`initial arm failed: ${JSON.stringify(initialArm.details)}`);
+await waitFor(
+  () => {
+    if (!existsSync(`${process.env.FM_HOME}/state/.watch.lock/pid`)) return false;
+    const pid = readFileSync(`${process.env.FM_HOME}/state/.watch.lock/pid`, "utf8").trim();
+    return /^[0-9]+$/.test(pid) && pidAlive(pid);
+  },
+  "initial watcher",
+);
+
+const initialWatcherPid = readFileSync(`${process.env.FM_HOME}/state/.watch.lock/pid`, "utf8").trim();
+await initial.handlers.get("session_shutdown")?.({ type: "session_shutdown", reason: "new" }, {});
+await waitFor(
+  () => !pidAlive(initialWatcherPid) && !existsSync(`${process.env.FM_HOME}/state/.watch.lock`),
+  "orderly predecessor shutdown",
+);
+// Pin the durable empty episode produced by an orderly predecessor close. The
+// extension fixture stops through an extra wrapper process whose cleanup timing
+// is not itself under test here.
+writeFileSync(`${process.env.FM_HOME}/state/.watcher-down`, "pending:downtime:t0.orderly\n");
+const replacement = makePi();
+mod.default(replacement.pi);
+await replacement.handlers.get("session_start")?.({
+  type: "session_start",
+  reason: "new",
+  previousSessionFile: "/tmp/previous.jsonl",
+}, {});
+const replacementArm = await replacement.getTool().execute("replacement-arm", {}, undefined, undefined, {});
+if (!replacementArm.details?.ok) {
+  throw new Error(`replacement arm failed: ${JSON.stringify(replacementArm.details)}`);
+}
+await waitFor(
+  () => {
+    if (!existsSync(`${process.env.FM_HOME}/state/.watch.lock/pid`)) return false;
+    const pid = readFileSync(`${process.env.FM_HOME}/state/.watch.lock/pid`, "utf8").trim();
+    const marker = existsSync(`${process.env.FM_HOME}/state/.watcher-down`)
+      ? readFileSync(`${process.env.FM_HOME}/state/.watcher-down`, "utf8").trim()
+      : "";
+    return /^[0-9]+$/.test(pid) && pidAlive(pid) && marker.startsWith("acked:");
+  },
+  "quiet replacement watcher",
+);
+await new Promise((resolve) => setTimeout(resolve, 2200));
+if (replacement.prompts.length !== 0) {
+  throw new Error(`empty replacement injected a follow-up: ${replacement.prompts.join(" || ")}`);
+}
+if (existsSync(`${process.env.FM_HOME}/state/.wake-queue`)) {
+  const queue = readFileSync(`${process.env.FM_HOME}/state/.wake-queue`, "utf8");
+  if (queue.length !== 0) throw new Error(`empty replacement left queued work: ${queue}`);
+}
+
+writeFileSync(`${process.env.FM_HOME}/state/crew.status`, "done: replacement event\n");
+await waitFor(() => replacement.prompts.length === 1, "real replacement event", 500);
+await new Promise((resolve) => setTimeout(resolve, 2200));
+if (replacement.prompts.length !== 1) {
+  throw new Error(`real event was delivered ${replacement.prompts.length} times: ${replacement.prompts.join(" || ")}`);
+}
+if (!replacement.prompts[0].includes("signal:") || replacement.prompts[0].includes("rearm-resurface")) {
+  throw new Error(`real event did not produce one direct signal follow-up: ${replacement.prompts[0]}`);
+}
+const queue = readFileSync(`${process.env.FM_HOME}/state/.wake-queue`, "utf8")
+  .trim()
+  .split("\n")
+  .filter(Boolean);
+const signalRows = queue.filter((row) => row.includes("\tsignal\tcrew.status\t"));
+if (signalRows.length === 0) throw new Error(`real event produced no durable signal row: ${queue.join(" || ")}`);
+const successorPid = readFileSync(`${process.env.FM_HOME}/state/.watch.lock/pid`, "utf8").trim();
+if (!pidAlive(successorPid)) throw new Error(`handling successor ${successorPid} is not alive`);
+await replacement.handlers.get("session_shutdown")?.({ type: "session_shutdown", reason: "quit" }, {});
+console.log(`T0_PROMPTS=${replacement.prompts.length}`);
+console.log(`T0_LOCK_PID=${successorPid}`);
+EOF
+  )
+  status=$?
+  if [ "${FM_TEST_EVIDENCE:-0}" = 1 ]; then
+    printf '%s\n' "$out"
+  fi
+  lock_pid=$(sed -n 's/^T0_LOCK_PID=//p' <<<"$out" | tail -1)
+  messages=$(sed -n 's/^T0_PROMPTS=//p' <<<"$out" | tail -1)
+  if [ -n "$lock_pid" ]; then
+    kill -TERM "$lock_pid" 2>/dev/null || true
+  fi
+  expect_code 0 "$status" "an empty Pi replacement must stay silent and deliver the next real event once: $out"
+  [ "$messages" = 1 ] || fail "T0 did not report one real-event follow-up: $out"
+  pass "an empty Pi replacement stays silent and the next real wake is delivered once"
+}
+
 # T1: a lost --handling-delivered handshake must not re-announce forever.
 # The real Pi extension drives the real arm/watcher, with only the handshake
 # RPC forced to fail. After the first recovery follow-up, wait past the old
@@ -218,5 +386,6 @@ test_handling_successor_does_not_go_blind() {
   pass "a resurfacing handling successor stays alive and supervises instead of going blind"
 }
 
+test_empty_pi_replacement_stays_silent
 test_handling_successor_does_not_go_blind
 test_unacknowledged_recovery_is_announced_once_per_generation

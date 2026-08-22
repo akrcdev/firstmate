@@ -598,8 +598,22 @@ fm_recovery_marker_snapshot() {
   fm_lock_release "$lock"
 }
 
+_fm_recovery_marker_retire_locked() {
+  local marker=$1 line=$2 tmp
+  case "$line" in pending:*|announced:*) ;; *) return 1 ;; esac
+  line="acked:${line#*:}"
+  tmp=$(mktemp "${marker}.tmp.XXXXXX") || return 1
+  if ! printf '%s\n' "$line" > "$tmp" \
+    || ! chmod 0600 "$tmp" \
+    || ! mv -f -- "$tmp" "$marker"; then
+    rm -f -- "$tmp"
+    return 1
+  fi
+  FM_RECOVERY_MARKER_TOKEN=$line
+}
+
 _fm_recovery_marker_ack() {
-  local marker=$1 expected_generation=$2 lock tmp line
+  local marker=$1 expected_generation=$2 lock line
   [ -n "$expected_generation" ] || return 2
   lock="${marker}.lock"
   fm_lock_acquire_wait "$lock" || return 1
@@ -610,23 +624,25 @@ _fm_recovery_marker_ack() {
   fi
   line=$FM_RECOVERY_MARKER_TOKEN
   case "$line" in
-    pending:*|announced:*) line="acked:${line#*:}" ;;
+    pending:*|announced:*)
+      if ! _fm_recovery_marker_retire_locked "$marker" "$line"; then
+        fm_lock_release "$lock"
+        return 1
+      fi
+      ;;
     acked:*) fm_lock_release "$lock"; return 0 ;;
     *) fm_lock_release "$lock"; return 1 ;;
   esac
-  tmp=$(mktemp "${marker}.tmp.XXXXXX") || { fm_lock_release "$lock"; return 1; }
-  if ! printf '%s\n' "$line" > "$tmp" \
-    || ! chmod 0600 "$tmp" \
-    || ! mv -f -- "$tmp" "$marker"; then
-    rm -f -- "$tmp"
-    fm_lock_release "$lock"
-    return 1
-  fi
   fm_lock_release "$lock"
 }
 
+# arm-check policy is recover by default. retire-empty is the narrow Pi
+# replacement capability: after malformed state has been handled, it may mark a
+# valid pending/announced episode acked only while the queue and marker locks are
+# both held and the queue is empty. FM_RECOVERY_MARKER_ACTION reports retired.
 _fm_recovery_marker_arm_check() {
-  local marker=$1 lock line quarantine
+  local marker=$1 policy=${2:-recover} lock line quarantine
+  case "$policy" in recover|retire-empty) ;; *) return 2 ;; esac
   FM_RECOVERY_MARKER_ACTION='none'
   lock="${marker}.lock"
   fm_lock_acquire_wait "$FM_WAKE_QUEUE_LOCK" || return 1
@@ -667,6 +683,21 @@ _fm_recovery_marker_arm_check() {
     return 0
   fi
   line=$FM_RECOVERY_MARKER_TOKEN
+  if [ "$policy" = retire-empty ] && [ ! -s "$FM_WAKE_QUEUE" ]; then
+    case "$line" in
+      pending:*|announced:*)
+        if ! _fm_recovery_marker_retire_locked "$marker" "$line"; then
+          fm_lock_release "$lock"
+          fm_lock_release "$FM_WAKE_QUEUE_LOCK"
+          return 1
+        fi
+        FM_RECOVERY_MARKER_ACTION='retired'
+        fm_lock_release "$lock"
+        fm_lock_release "$FM_WAKE_QUEUE_LOCK"
+        return 0
+        ;;
+    esac
+  fi
   case "$line" in
     pending:handling:*|announced:handling:*|announced:downtime:*)
       FM_RECOVERY_MARKER_ACTION='wait'
@@ -732,7 +763,7 @@ fm_recovery_transition() {
       _fm_recovery_marker_ack "$marker" "$target"
       ;;
     arm-check)
-      _fm_recovery_marker_arm_check "$marker"
+      _fm_recovery_marker_arm_check "$marker" "${target:-recover}"
       ;;
     reopen-announced)
       _fm_recovery_marker_reopen_announced "$marker"
@@ -775,7 +806,7 @@ fm_recovery_marker_begin_handling() {
 }
 
 fm_recovery_marker_arm_check() {
-  fm_recovery_transition "$1" arm-check
+  fm_recovery_transition "$1" arm-check "${2:-recover}"
 }
 
 fm_recovery_marker_reopen_announced() {

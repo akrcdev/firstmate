@@ -8,6 +8,8 @@
 // a new live generation so monitoring can arm again without restarting Pi. Terminal
 // quit leaves the final generation stopped so late callbacks cannot rearm. Stale
 // callbacks from a prior generation are no-ops against the active replacement.
+// Every arm child receives both the Pi owner capability and the exact
+// session_start reason, so watcher recovery never infers replacement normality.
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -46,8 +48,11 @@ type WatchToolRenderContext = {
   isPartial: boolean;
 };
 
+type PiWatchStartReason = "startup" | "reload" | "new" | "resume" | "fork" | "unknown";
+
 type SessionGeneration = {
   id: number;
+  startReason: PiWatchStartReason;
   stopping: boolean;
   child: ChildProcess | null;
   retryTimer: ReturnType<typeof setTimeout> | null;
@@ -185,9 +190,23 @@ function classifyClose(stdout: string, stderr: string, code: number | null, sign
   };
 }
 
-function createGeneration(): SessionGeneration {
+function watchStartReason(reason: unknown): PiWatchStartReason {
+  switch (reason) {
+    case "startup":
+    case "reload":
+    case "new":
+    case "resume":
+    case "fork":
+      return reason;
+    default:
+      return "unknown";
+  }
+}
+
+function createGeneration(startReason: PiWatchStartReason = "unknown"): SessionGeneration {
   return {
     id: ++nextGenerationId,
+    startReason,
     stopping: false,
     child: null,
     retryTimer: null,
@@ -442,6 +461,8 @@ export default function (pi: ExtensionAPI) {
       FM_ROOT_OVERRIDE: fmRoot,
       FM_CONFIG_OVERRIDE: config,
       FM_WATCH_ARM_SCRIPT: armScript,
+      FM_WATCH_EXTENSION_OWNER: "pi",
+      FM_WATCH_START_REASON: owner.startReason,
       FM_WATCH_PREDECESSOR_ARM_PID: predecessorArmPid,
     };
     const armChild = spawn("bash", ["-lc", "config_dir=\"${FM_CONFIG_OVERRIDE:-$FM_HOME/config}\"; [ -f \"$config_dir/x-mode.env\" ] && . \"$config_dir/x-mode.env\"; exec \"$FM_WATCH_ARM_SCRIPT\" --restart"], {
@@ -535,8 +556,10 @@ export default function (pi: ExtensionAPI) {
     };
   }
 
-  pi.on?.("session_start", () => {
-    if (generation.stopping) generation = createGeneration();
+  pi.on?.("session_start", (event) => {
+    const startReason = watchStartReason(event.reason);
+    if (generation.stopping) generation = createGeneration(startReason);
+    else generation.startReason = startReason;
     activateGeneration(generation);
     markLoaded();
   });

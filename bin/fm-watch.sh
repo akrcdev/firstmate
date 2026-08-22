@@ -871,8 +871,17 @@ if ! fm_lock_try_acquire "$WATCH_LOCK"; then
   exit 0
 fi
 WATCHER_RECOVERY_PENDING=0
+WATCHER_RECOVERY_POLICY=recover
+if [ "${FM_WATCH_EXTENSION_OWNER:-}" = pi ] \
+  && [ "${FM_WATCH_HANDLING_SUCCESSOR:-0}" != 1 ] \
+  && [ "${FM_WATCH_ABNORMAL_RECOVERY:-0}" = 0 ]; then
+  case "${FM_WATCH_START_REASON:-}" in
+    new|resume|fork|reload) WATCHER_RECOVERY_POLICY=retire-empty ;;
+  esac
+fi
 if [ -n "${FM_LOCK_RECOVERED_PID:-}" ]; then
   WATCHER_RECOVERY_PENDING=1
+  WATCHER_RECOVERY_POLICY=recover
 fi
 if [ "${FM_WATCH_HANDLING_SUCCESSOR:-0}" != 1 ]; then
   if ! fm_recovery_marker_reopen_announced "$WATCHER_DOWNTIME_MARKER"; then
@@ -880,7 +889,7 @@ if [ "${FM_WATCH_HANDLING_SUCCESSOR:-0}" != 1 ]; then
     exit 1
   fi
 fi
-if ! fm_recovery_marker_arm_check "$WATCHER_DOWNTIME_MARKER"; then
+if ! fm_recovery_marker_arm_check "$WATCHER_DOWNTIME_MARKER" "$WATCHER_RECOVERY_POLICY"; then
   echo "watcher: recovery state could not be consumed safely; retaining stale lock evidence" >&2
   exit 1
 fi

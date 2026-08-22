@@ -138,11 +138,12 @@ drain_ack_pair() {  # <drain-stderr>
   printf '%s\t%s\n' "$sequence" "$generation"
 }
 
-start_rearm_arm() {  # <home> <state> <fakebin> <arm-out> [predecessor-arm-pid]
-  local home=$1 state=$2 fakebin=$3 armout=$4 predecessor=${5:-} i
+start_rearm_arm() {  # <home> <state> <fakebin> <arm-out> [predecessor-arm-pid] [owner] [start-reason]
+  local home=$1 state=$2 fakebin=$3 armout=$4 predecessor=${5:-} owner=${6:-} start_reason=${7:-} i
   PATH="$fakebin:$PATH" FM_HOME="$home" FM_STATE_OVERRIDE="$state" \
     FM_POLL=1 FM_SIGNAL_GRACE=0 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 \
     FM_WATCH_PREDECESSOR_ARM_PID="$predecessor" \
+    FM_WATCH_EXTENSION_OWNER="$owner" FM_WATCH_START_REASON="$start_reason" \
     "$WATCH_ARM" --restart > "$armout" &
   ARM_PID=$!
   i=0
@@ -392,7 +393,7 @@ test_marker_publish_failure_retains_recovery_evidence() {
 
   rmdir "$state/.watcher-down"
   armout="$dir/recovery-arm.out"
-  start_rearm_arm "$home" "$state" "$fakebin" "$armout"
+  start_rearm_arm "$home" "$state" "$fakebin" "$armout" '' pi new
   wait_for_exit "$ARM_PID" 80 || fail "stale-lock recovery did not surface downtime"
   grep -F 'check: rearm-resurface' "$armout" >/dev/null \
     || fail "stale-lock recovery did not emit the recovery wake: $(cat "$armout")"
@@ -540,7 +541,7 @@ test_malformed_marker_is_quarantined_once() {
   mkdir -p "$home/data" "$state/.watcher-down"
   printf 'foreign state\n' > "$state/.watcher-down/payload"
 
-  start_rearm_arm "$home" "$state" "$fakebin" "$dir/recovery-arm.out"
+  start_rearm_arm "$home" "$state" "$fakebin" "$dir/recovery-arm.out" '' pi new
   wait_for_exit "$ARM_PID" 80 || fail "malformed marker did not produce a bounded recovery wake"
   grep -F 'check: rearm-resurface' "$dir/recovery-arm.out" >/dev/null \
     || fail "malformed marker did not emit the recovery wake"
@@ -584,6 +585,133 @@ test_recovery_consumption_serializes_queue_publication() {
   pass "watch-arm: publication after recovery handoff is surfaced"
 }
 
+run_pi_recovery_append_race() {
+  local order=$1 dir home state fakebin held release holder arm_check publisher action rows stable_arm i
+  dir=$(make_case "pi-recovery-race-$order")
+  home="$dir/home"
+  state="$dir/state"
+  fakebin="$dir/fakebin"
+  held="$dir/marker-lock-held"
+  release="$dir/release-marker-lock"
+  mkdir -p "$home/data"
+  printf 'pending:downtime:race.%s\n' "$order" > "$state/.watcher-down"
+  chmod 600 "$state/.watcher-down"
+
+  FM_STATE_OVERRIDE="$state" bash -c '
+    . "$1"
+    fm_lock_acquire_wait "$2" || exit 1
+    : > "$3"
+    while [ ! -e "$4" ]; do sleep 0.01; done
+    fm_lock_release "$2"
+  ' _ "$ROOT/bin/fm-wake-lib.sh" "$state/.watcher-down.lock" "$held" "$release" &
+  holder=$!
+  i=0
+  while [ "$i" -lt 100 ] && [ ! -e "$held" ]; do sleep 0.02; i=$((i + 1)); done
+  [ -e "$held" ] || fail "$order marker-lock holder did not start"
+
+  if [ "$order" = retire-first ]; then
+    FM_STATE_OVERRIDE="$state" bash -c '
+      . "$1"
+      fm_recovery_marker_arm_check "$2" retire-empty || exit 1
+      printf "%s\n" "$FM_RECOVERY_MARKER_ACTION"
+    ' _ "$ROOT/bin/fm-wake-lib.sh" "$state/.watcher-down" > "$dir/arm-check.out" &
+    arm_check=$!
+    i=0
+    while [ "$i" -lt 100 ] && [ ! -e "$state/.wake-queue.lock" ]; do sleep 0.02; i=$((i + 1)); done
+    [ -e "$state/.wake-queue.lock" ] || fail "quiet retirement never entered its queue critical section"
+    append_wake "$state" check startup-network "check: concurrent $order" &
+    publisher=$!
+  else
+    append_wake "$state" check startup-network "check: concurrent $order" &
+    publisher=$!
+    i=0
+    while [ "$i" -lt 100 ] && [ ! -e "$state/.wake-queue.lock" ]; do sleep 0.02; i=$((i + 1)); done
+    [ -e "$state/.wake-queue.lock" ] || fail "concurrent publisher never entered its queue critical section"
+    FM_STATE_OVERRIDE="$state" bash -c '
+      . "$1"
+      fm_recovery_marker_arm_check "$2" retire-empty || exit 1
+      printf "%s\n" "$FM_RECOVERY_MARKER_ACTION"
+    ' _ "$ROOT/bin/fm-wake-lib.sh" "$state/.watcher-down" > "$dir/arm-check.out" &
+    arm_check=$!
+  fi
+
+  touch "$release"
+  wait "$holder" || fail "$order marker-lock holder failed"
+  wait "$arm_check" || fail "$order recovery check failed"
+  wait "$publisher" || fail "$order queue publication failed"
+  action=$(cat "$dir/arm-check.out")
+  case "$order:$action" in
+    retire-first:retired|append-first:recover) ;;
+    *) fail "$order produced unexpected recovery action '$action'" ;;
+  esac
+  rows=$(grep -c "$(printf '\tcheck\tstartup-network\t')" "$state/.wake-queue" || true)
+  [ "$rows" = 1 ] || fail "$order produced $rows durable rows instead of one"
+
+  start_rearm_arm "$home" "$state" "$fakebin" "$dir/arm.out" '' pi new
+  wait_for_exit "$ARM_PID" 80 || fail "$order durable append was not surfaced"
+  grep -F 'check: rearm-resurface' "$dir/arm.out" >/dev/null \
+    || fail "$order durable append did not produce one recovery action: $(cat "$dir/arm.out")"
+  FM_HOME="$home" FM_STATE_OVERRIDE="$state" "$DRAIN" > "$dir/drain.out" \
+    || fail "$order recovery drain failed"
+  rows=$(grep -c "$(printf '\tcheck\tstartup-network\t')" "$dir/drain.out" || true)
+  [ "$rows" = 1 ] || fail "$order drain presented the concurrent row $rows times"
+  ack_wakes "$state" || fail "$order recovery acknowledgement failed"
+  [ ! -s "$state/.wake-queue" ] || fail "$order acknowledgement left the concurrent row queued"
+
+  start_rearm_arm "$home" "$state" "$fakebin" "$dir/stable.out" '' pi new
+  stable_arm=$ARM_PID
+  is_live_non_zombie "$stable_arm" || fail "$order stable replacement did not stay live"
+  sleep 2
+  is_live_non_zombie "$stable_arm" || fail "$order stable replacement replayed the event"
+  ! grep -F 'check: rearm-resurface' "$dir/stable.out" >/dev/null \
+    || fail "$order stable replacement duplicated recovery"
+  kill -TERM "$stable_arm" 2>/dev/null || true
+  wait "$stable_arm" 2>/dev/null || true
+}
+
+test_pi_recovery_retirement_serializes_concurrent_append() {
+  run_pi_recovery_append_race retire-first
+  run_pi_recovery_append_race append-first
+  pass "watch-arm: concurrent append wins now or next without loss or duplication"
+}
+
+test_pi_normal_replacement_surfaces_stale_predecessor() {
+  local dir home state fakebin first_arm watcher_pid i
+  dir=$(make_case pi-stale-predecessor-recovery)
+  home="$dir/home"
+  state="$dir/state"
+  fakebin="$dir/fakebin"
+  mkdir -p "$home/data"
+
+  PATH="$fakebin:$PATH" FM_HOME="$home" FM_STATE_OVERRIDE="$state" \
+    FM_POLL=3 FM_SIGNAL_GRACE=0 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 \
+    "$WATCH_ARM" --restart > "$dir/first-arm.out" &
+  first_arm=$!
+  i=0
+  while [ "$i" -lt 100 ]; do
+    grep -q '^watcher: started ' "$dir/first-arm.out" 2>/dev/null && break
+    sleep 0.05
+    i=$((i + 1))
+  done
+  grep -q '^watcher: started ' "$dir/first-arm.out" \
+    || fail "stale-predecessor fixture did not establish its watcher"
+  watcher_pid=$(cat "$state/.watch.lock/pid" 2>/dev/null || true)
+  sleep 2
+
+  PATH="$fakebin:$PATH" FM_HOME="$home" FM_STATE_OVERRIDE="$state" \
+    FM_GUARD_GRACE=1 FM_POLL=1 FM_SIGNAL_GRACE=0 \
+    FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 \
+    FM_WATCH_EXTENSION_OWNER=pi FM_WATCH_START_REASON=new \
+    "$WATCH_ARM" --restart > "$dir/recovery-arm.out" &
+  ARM_PID=$!
+  wait_for_exit "$ARM_PID" 120 || fail "normal Pi replacement hid a stale predecessor recovery"
+  wait "$first_arm" 2>/dev/null || true
+  grep -F 'check: rearm-resurface' "$dir/recovery-arm.out" >/dev/null \
+    || fail "stale predecessor was quieted as a normal replacement: $(cat "$dir/recovery-arm.out")"
+  ! is_live_non_zombie "$watcher_pid" || fail "stale predecessor watcher remained live"
+  pass "watch-arm: a normal Pi replacement keeps stale predecessor recovery visible"
+}
+
 test_restart_preserves_recovery_across_reused_pid_lock() {
   local dir home state fakebin armout unrelated owner
   dir=$(make_case restart-reused-pid-recovery)
@@ -602,7 +730,7 @@ test_restart_preserves_recovery_across_reused_pid_lock() {
   printf '%s\n' 'reused-pid-does-not-match' > "$owner/pid-identity"
   ln -s "$owner" "$state/.watch.lock"
 
-  start_rearm_arm "$home" "$state" "$fakebin" "$armout"
+  start_rearm_arm "$home" "$state" "$fakebin" "$armout" '' pi new
   wait_for_exit "$ARM_PID" 80 || fail "restart did not surface recovery after clearing a reused-pid lock"
   grep -F 'check: rearm-resurface' "$armout" >/dev/null \
     || fail "restart cleared reused-pid lock evidence without a recovery wake: $(cat "$armout")"
@@ -813,6 +941,8 @@ test_delivery_gap_wake_is_recovered_once
 test_interrupted_handling_is_redrained_on_rearm
 test_malformed_marker_is_quarantined_once
 test_recovery_consumption_serializes_queue_publication
+test_pi_recovery_retirement_serializes_concurrent_append
+test_pi_normal_replacement_surfaces_stale_predecessor
 test_restart_preserves_recovery_across_reused_pid_lock
 test_markerless_legacy_queue_is_recovered_on_arm
 test_handling_window_close_keeps_the_acknowledgement_valid

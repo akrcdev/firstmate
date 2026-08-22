@@ -53,9 +53,10 @@
 #
 # --restart: stop ONLY this FM_HOME's watcher (the pid recorded in THIS home's
 # state/.watch.lock) and own a fresh cycle, or attach if a verified live peer
-# wins the singleton while the duplicate child stands down. It
-# resolves and signals exactly that pid, so it can never touch another home's
-# watcher. NEVER `pkill -f
+# wins the singleton while the duplicate child stands down. It classifies a
+# stale, dead, malformed, or identity-mismatched recorded holder as explicit
+# abnormal recovery for the watcher child. It resolves and signals exactly that
+# pid, so it can never touch another home's watcher. NEVER `pkill -f
 # bin/fm-watch.sh`: that pattern matches every firstmate home's watcher
 # (secondmate homes run the same script) and would kill siblings.
 set -u
@@ -385,6 +386,7 @@ handling_successor_generation() {
 mode=arm
 handling_generation=
 handling_watcher_pid=
+watch_start_abnormal=0
 case "${1:-}" in
   ''|arm|--arm) mode=arm ;;
   --restart) mode=restart ;;
@@ -410,8 +412,17 @@ fi
 if [ "$mode" = restart ]; then
   # Home-scoped stop: only the watcher pid recorded in THIS home's lock.
   lock_pid=$(cat "$WATCH_LOCK/pid" 2>/dev/null || true)
+  if [ -e "$WATCH_LOCK" ] || [ -L "$WATCH_LOCK" ]; then
+    if ! fm_pid_alive "$lock_pid"; then
+      watch_start_abnormal=1
+    fi
+  fi
   if fm_pid_alive "$lock_pid"; then
     if fm_watcher_lock_matches_pid "$STATE" "$WATCH" "$lock_pid" "$FM_HOME"; then
+      # An orderly replacement may stop a healthy predecessor silently. A live
+      # but stale predecessor is explicit abnormal recovery and must remain
+      # visible even when its durable wake queue is empty.
+      healthy_watcher || watch_start_abnormal=1
       kill -TERM "$lock_pid" 2>/dev/null || true
       # Wait for it to actually exit before relaunching, so the fresh watcher
       # either takes a released lock or reclaims a now-dead-pid stale lock instead
@@ -422,6 +433,7 @@ if [ "$mode" = restart ]; then
         i=$((i + 1))
       done
     else
+      watch_start_abnormal=1
       if ! clear_stale_recorded_watcher_lock; then
         echo "watcher: FAILED - stale watcher recovery state could not be persisted" >&2
         exit 1
@@ -479,9 +491,10 @@ child_out=$(mktemp "$STATE/.watch-arm-output.XXXXXX") || {
   exit 1
 }
 if [ -n "${FM_WATCH_PREDECESSOR_ARM_PID:-}" ]; then
-  FM_WATCH_HANDLING_SUCCESSOR=1 "$WATCH" >"$child_out" &
+  FM_WATCH_HANDLING_SUCCESSOR=1 FM_WATCH_ABNORMAL_RECOVERY="$watch_start_abnormal" \
+    "$WATCH" >"$child_out" &
 else
-  "$WATCH" >"$child_out" &
+  FM_WATCH_ABNORMAL_RECOVERY="$watch_start_abnormal" "$WATCH" >"$child_out" &
 fi
 child=$!
 cycle_begin "$child" started "$(fm_pid_identity "$child" 2>/dev/null || true)"

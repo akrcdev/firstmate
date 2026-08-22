@@ -429,12 +429,12 @@ grok 0.2.103 (89c3d36fb6f1) [stable]
 | Claude | `FM_CLAUDE_LIVE_E2E=1 tests/fm-claude-stop-autoarm-live-e2e.test.sh` | Session start reclaimed a stale owner before two Stop-owned cycles, and a competing live owner prevented arm, rewake, epoch write, or lock replacement. |
 | Codex | `FM_CODEX_LIVE_E2E=1 tests/fm-codex-continuity-live-e2e.test.sh` | The one-second foreground checkpoint returned without switching to the arm wrapper. |
 | OpenCode | `FM_OPENCODE_LIVE_E2E=1 tests/fm-opencode-primary-live-e2e.test.sh` | A verified successor existed before prompt handling, with no model re-arm or turn-end fallback. |
-| Pi | `FM_PI_LIVE_E2E=1 tests/fm-pi-primary-live-e2e.test.sh` | One initial tool call led to extension-owned successors and clean child retirement on exit. |
+| Pi | `FM_PI_LIVE_E2E=1 tests/fm-pi-primary-live-e2e.test.sh` | One requested arm stayed extension-owned, a normal empty same-process replacement added no recovery follow-up, actionable work still started a successor, and exit retired the child. |
 | Grok | `FM_GROK_LIVE_E2E=1 tests/fm-grok-continuity-live-e2e.test.sh` | Native task completion surfaced the actionable close and the cycle ledger recorded `reason=actionable-signal`. |
 
 Pi 0.81.1 repeated the continuity and clean-exit lifecycle on 2026-07-23 after the Calm presentation changes.
 
-Pi same-process session-transition ownership was verified on 2026-07-27 against the tracked extension with a faithful in-process factory rebind (module cache retained, real arm children):
+Pi same-process session-transition ownership was reverified on 2026-08-22 against the tracked extension with a faithful in-process factory rebind (module cache retained, real arm children):
 
 ```sh
 pi --version
@@ -442,24 +442,53 @@ tests/fm-pi-watch-extension.test.sh
 tests/fm-pi-primary-types.test.sh
 ```
 
-Observed guarantee: after ordinary `session_shutdown` for `/new`, `/resume`, and `/fork`, plus same-instance shutdown-plus-start, the replacement generation armed again without a Pi restart and without the `watcher: not armed - Pi session is shutting down` refusal.
-Stale prior-generation tool callbacks could not mutate the active child, repeated transitions kept exactly one live arm cycle, and terminal `quit` still refused late rearm.
-Plain Pi and pi-signed share the same tracked `.pi/extensions/fm-primary-pi-watch.ts` path, so both inherit the generation owner; other primary harnesses are not applicable because they do not use this Pi extension lifecycle.
+Observed guarantee: after ordinary `session_shutdown` for `/new`, `/resume`, `/fork`, and `/reload`, plus same-instance shutdown-plus-start, the replacement generation armed again without a Pi restart and without the `watcher: not armed - Pi session is shutting down` refusal.
+Each arm carried the explicit Pi owner and exact session-start reason, stale prior-generation tool callbacks could not mutate the active child, repeated transitions kept exactly one live arm cycle, and terminal `quit` still refused late rearm.
+Plain Pi and pi-signed share the same tracked `.pi/extensions/fm-primary-pi-watch.ts` path, so both inherit the generation owner.
 
-The once-per-generation recovery bound and immediate handling-successor poll were verified on 2026-08-21 with the tracked Pi extension, real watcher processes, and an isolated home.
-The regression forced handling confirmation to fail, observed one recovery follow-up across the former repeat window, confirmed the successor remained live, and then proved a separate handling successor durably queued a crew event within the bounded poll window.
+The bounded quiet-recovery correction was verified on 2026-08-22 with real watcher and arm processes in isolated homes.
+An empty normal Pi replacement retired its recovery episode, emitted no follow-up, stayed live, and delivered the next real event once.
+Both forced queue-publication orderings delivered one durable row now or on the next cycle without loss or replay.
+The same run kept handling successors live and kept stale, dead, reused, and malformed recovery visible; the Pi extension suite separately kept session-lock loss and exhausted continuity retries visible.
 
 ```sh
 bin/fm-test-run.sh tests/fm-watch-recovery-loop.test.sh
+bin/fm-test-run.sh tests/fm-watch-arm.test.sh
+bin/fm-test-run.sh tests/fm-pi-watch-extension.test.sh
+```
+
+Observed output included:
+
+```text
+ok - an empty Pi replacement stays silent and the next real wake is delivered once
+ok - a resurfacing handling successor stays alive and supervises instead of going blind
+ok - unacknowledged recovery is announced at most once per generation and the successor stays alive
+ok - watch-arm: concurrent append wins now or next without loss or duplication
+ok - watch-arm: a normal Pi replacement keeps stale predecessor recovery visible
+ok - Pi established clean closes stop at the configured retry limit
+ok - Pi close handler verifies session-lock ownership before successor launch
+```
+
+The installed Pi 0.84.1 proof ran headlessly on 2026-08-22 with the existing shared authentication store, an isolated `FM_HOME`, a disposable project, and no tmux dependency.
+The test entered a real Pi `session_start` replacement, asked for one watcher tool call, and counted extension-delivered recovery input and agent starts.
+
+```sh
+pi --version
+FM_PI_LIVE_E2E=1 tests/fm-pi-primary-live-e2e.test.sh
 ```
 
 Observed output:
 
 ```text
-ok - a resurfacing handling successor stays alive and supervises instead of going blind
-ok - unacknowledged recovery is announced at most once per generation and the successor stays alive
-FM_TEST_SUMMARY total=1 failed=0 skipped_gate=0 duration_ms=59357
+0.84.1
+ok - Pi 0.84.1 headless quiet recovery agent_starts=1 arm_tool_calls=1 rearm_followups=0
 ```
+
+The applicability review covered every supported primary harness and task backend.
+Pi and pi-signed are the only primary surfaces that load the tracked Pi extension and can provide both required signals.
+Claude, Codex, OpenCode, Grok, Kimi, and Cursor do not set the Pi owner or session-start reason and therefore retain their existing recovery behavior; OpenCode's shared arm and successor tests passed unchanged.
+Muse is crewmate-only and has no primary watcher lifecycle to classify.
+The quiet decision runs before task-window enumeration, so tmux, Herdr, Zellij, Orca, and cmux backends retain the same watcher scan and event-delivery paths.
 
 Deterministic entry points:
 

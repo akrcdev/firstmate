@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
-# Opt-in credentialed Pi continuity regression on a private tmux socket and
-# isolated project/home state. It uses the existing shared Pi auth store without
-# copying credentials and pins the captain-approved openai-codex model.
+# Opt-in credentialed Pi continuity regression.
+# Its headless quiet-recovery proof needs no tmux; when tmux is installed, the
+# same run continues through the private-socket interactive coverage.
+# It uses the existing shared Pi auth store without copying credentials and pins
+# the captain-approved openai-codex model.
 set -u
 
 if [ "${FM_PI_LIVE_E2E:-0}" != 1 ]; then
-  echo "skip: set FM_PI_LIVE_E2E=1 to run the isolated interactive Pi regression"
+  echo "skip: set FM_PI_LIVE_E2E=1 to run the isolated Pi regression"
   exit 0
 fi
 
@@ -18,7 +20,87 @@ fail() {
 }
 
 command -v pi >/dev/null 2>&1 || fail "pi not found"
-command -v tmux >/dev/null 2>&1 || fail "tmux not found"
+PI_VERSION=$(pi --version)
+
+run_headless_quiet_recovery() (
+  local lab project home fakebin events out status agent_starts arm_tool_calls rearm_followups
+  lab=$(mktemp -d "${TMPDIR:-/tmp}/fm-pi-quiet-live.XXXXXX") || exit 1
+  trap 'rm -rf "$lab"' EXIT
+  project="$lab/project"
+  home="$lab/home"
+  fakebin="$lab/fakebin"
+  events="$home/state/events.log"
+  mkdir -p "$project/.pi/extensions" "$home/state" "$home/config" "$fakebin"
+  git init -q "$project"
+  cat > "$fakebin/tmux" <<'SH'
+#!/usr/bin/env bash
+exit 0
+SH
+  chmod +x "$fakebin/tmux"
+  cat > "$project/.pi/extensions/quiet-recovery-driver.ts" <<'TS'
+import { appendFileSync, chmodSync, mkdirSync, writeFileSync } from "node:fs";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+
+const home = process.env.FM_HOME!;
+const events = process.env.FM_PI_WATCH_EVENTS!;
+const record = (line: string): void => appendFileSync(events, `${line}\n`);
+
+export default function (pi: ExtensionAPI) {
+  pi.on("session_start", () => {
+    mkdirSync(`${home}/state`, { recursive: true });
+    writeFileSync(`${home}/state/.lock`, `${process.pid}\n`);
+  });
+  pi.on("agent_start", () => record("agent_start"));
+  pi.on("tool_call", (event) => record(`tool_call ${event.toolName}`));
+  pi.on("input", (event) => {
+    if (event.source === "extension" && event.text.includes("rearm-resurface")) {
+      record("rearm_followup");
+    }
+  });
+  pi.registerCommand("fm-test-replace", {
+    description: "Enter the quiet-recovery replacement fixture.",
+    handler: async (_args, ctx) => {
+      writeFileSync(`${home}/state/.watcher-down`, "pending:downtime:live.orderly\n");
+      chmodSync(`${home}/state/.watcher-down`, 0o600);
+      await ctx.newSession({
+        withSession: async (next) => {
+          await next.sendUserMessage(
+            "Call fm_watch_arm_pi exactly once, use no other tool, then reply exactly QUIET_RECOVERY_READY.",
+          );
+        },
+      });
+    },
+  });
+}
+TS
+  status=0
+  out=$(
+    cd "$project" &&
+      PATH="$fakebin:$PATH" FM_HOME="$home" FM_ROOT_OVERRIDE="$ROOT" \
+        FM_PI_WATCH_EVENTS="$events" FM_POLL=1 FM_SIGNAL_GRACE=0 \
+        FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 \
+        timeout 180 pi --print --approve --no-session --no-context-files --no-extensions \
+          -e "$ROOT/.pi/extensions/fm-primary-pi-watch.ts" \
+          -e .pi/extensions/quiet-recovery-driver.ts \
+          --model openai-codex/gpt-5.6-sol --thinking low "/fm-test-replace"
+  ) || status=$?
+  [ "$status" -eq 0 ] || fail "Pi headless quiet-recovery proof exited $status: $out"
+  printf '%s\n' "$out" | grep -Fq 'QUIET_RECOVERY_READY' \
+    || fail "Pi headless replacement did not complete its one requested turn: $out"
+  agent_starts=$(grep -c '^agent_start$' "$events" 2>/dev/null || true)
+  arm_tool_calls=$(grep -c '^tool_call fm_watch_arm_pi$' "$events" 2>/dev/null || true)
+  rearm_followups=$(grep -c '^rearm_followup$' "$events" 2>/dev/null || true)
+  [ "$agent_starts" -eq 1 ] || fail "headless empty replacement started $agent_starts agent turns"
+  [ "$arm_tool_calls" -eq 1 ] || fail "headless replacement made $arm_tool_calls watcher tool calls"
+  [ "$rearm_followups" -eq 0 ] || fail "headless empty replacement injected $rearm_followups recovery follow-ups"
+  printf 'ok - Pi %s headless quiet recovery agent_starts=%s arm_tool_calls=%s rearm_followups=%s\n' \
+    "$PI_VERSION" "$agent_starts" "$arm_tool_calls" "$rearm_followups"
+)
+
+run_headless_quiet_recovery
+if ! command -v tmux >/dev/null 2>&1; then
+  exit 0
+fi
 
 TMUX=$(command -v tmux)
 SOCKET="fm-pi-live-e2e-$$"
@@ -27,7 +109,7 @@ LAB="$ROOT/.pi-live-e2e.$$"
 PROJECT="$LAB/project"
 AHOY_PROJECT="$LAB/ahoy-project"
 HOME_DIR="$LAB/fmhome"
-PI_VERSION=$(pi --version)
+WATCH_EVENTS="$HOME_DIR/state/pi-watch-events.log"
 # shellcheck source=/dev/null
 . "$ROOT/bin/fm-operational-input.sh"
 # shellcheck disable=SC2016 # Backticks are literal prompt markup.
@@ -257,6 +339,25 @@ cp "$ROOT/.pi/extensions/lib/fm-calm-visibility.ts" "$PROJECT/.pi/extensions/lib
 cp "$ROOT/.pi/extensions/lib/fm-calm-working-ship.ts" "$PROJECT/.pi/extensions/lib/fm-calm-working-ship.ts"
 cp "$ROOT/.pi/extensions/lib/fm-operational-input.ts" "$PROJECT/.pi/extensions/lib/fm-operational-input.ts"
 cp "$ROOT/.pi/extensions/fm-primary-turnend-guard.ts" "$PROJECT/.pi/extensions/fm-primary-turnend-guard.ts"
+cat > "$PROJECT/.pi/extensions/fm-watch-live-recorder.ts" <<'TS'
+import { appendFileSync } from "node:fs";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+
+const path = process.env.FM_PI_WATCH_EVENTS;
+const record = (line: string): void => {
+  if (path) appendFileSync(path, `${line}\n`);
+};
+
+export default function (pi: ExtensionAPI) {
+  pi.on("agent_start", () => record("agent_start"));
+  pi.on("tool_call", (event) => record(`tool_call ${event.toolName}`));
+  pi.on("input", (event) => {
+    if (event.source === "extension" && event.text.includes("rearm-resurface")) {
+      record("rearm_followup");
+    }
+  });
+}
+TS
 cp "$ROOT/bin/fm-watch-arm.sh" "$PROJECT/bin/fm-watch-arm.sh"
 cp "$ROOT/bin/fm-operational-input.sh" "$PROJECT/bin/fm-operational-input.sh"
 cp "$ROOT/bin/fm-supervision-instructions.sh" "$PROJECT/bin/fm-supervision-instructions.sh"
@@ -264,7 +365,7 @@ chmod +x "$PROJECT/bin/fm-operational-input.sh"
 mkdir -p "$HOME_DIR/state" "$HOME_DIR/config"
 
 "$TMUX" -L "$SOCKET" new-session -d -s "$SESSION" -c "$PROJECT" \
-  "env FM_HOME='$HOME_DIR' FM_ROOT_OVERRIDE='$PROJECT' FM_POLL=1 FM_SIGNAL_GRACE=0 FM_HEARTBEAT=600 bash -lc 'printf \"%s\\n\" \"\$\$\" > \"\$FM_HOME/state/.lock\"; pi --approve --no-session --no-context-files --no-extensions -e .pi/extensions/fm-calm.ts -e .pi/extensions/fm-primary-turnend-guard.ts -e .pi/extensions/fm-primary-pi-watch.ts --model openai-codex/gpt-5.6-sol --thinking low; rc=\$?; printf \"PI_EXIT=%s\\n\" \"\$rc\"; sleep 300'"
+  "env FM_HOME='$HOME_DIR' FM_ROOT_OVERRIDE='$PROJECT' FM_PI_WATCH_EVENTS='$WATCH_EVENTS' FM_POLL=1 FM_SIGNAL_GRACE=0 FM_HEARTBEAT=600 bash -lc 'printf \"%s\\n\" \"\$\$\" > \"\$FM_HOME/state/.lock\"; pi --approve --no-session --no-context-files --no-extensions -e .pi/extensions/fm-calm.ts -e .pi/extensions/fm-primary-turnend-guard.ts -e .pi/extensions/fm-primary-pi-watch.ts -e .pi/extensions/fm-watch-live-recorder.ts --model openai-codex/gpt-5.6-sol --thinking low; rc=\$?; printf \"PI_EXIT=%s\\n\" \"\$rc\"; sleep 300'"
 
 i=0
 while [ "$i" -lt 120 ]; do
@@ -304,7 +405,7 @@ send_prompt "/calm"
 sleep 0.2
 
 : > "$HOME_DIR/state/pi-e2e.meta"
-send_prompt "Start supervision with fm_watch_arm_pi and never use bash to arm supervision. After the watcher wake arrives, run bin/fm-wake-drain.sh and reply exactly HANDLED."
+send_prompt "Start supervision with fm_watch_arm_pi and never use bash to arm supervision. After the watcher wake arrives, run bin/fm-wake-drain.sh, run its exact WAKE_ACK_REQUIRED command, and reply exactly HANDLED."
 wait_for_text "watcher: started Pi extension arm child 1" || fail "Pi did not render the initial watcher tool result"
 
 printf 'done: pi live e2e watcher fire\n' > "$HOME_DIR/state/pi-e2e.status"
@@ -317,6 +418,21 @@ done
 grep -Eq 'reason=actionable-signal.*successor=started:[0-9]+' "$HOME_DIR/state/.watch-cycle-exits.log" 2>/dev/null \
   || fail "Pi extension did not start and ledger-link a successor after the actionable close"
 wait_for_exact_line "HANDLED" 120 || fail "Pi did not drain and settle after its extension-owned successor started"
+i=0
+while [ "$i" -lt 120 ]; do
+  if [ ! -s "$HOME_DIR/state/.wake-queue" ]; then
+    case "$(cat "$HOME_DIR/state/.watcher-down" 2>/dev/null || true)" in
+      acked:*) break ;;
+    esac
+  fi
+  sleep 0.5
+  i=$((i + 1))
+done
+[ ! -s "$HOME_DIR/state/.wake-queue" ] || fail "Pi left the handled wake queued before replacement"
+case "$(cat "$HOME_DIR/state/.watcher-down" 2>/dev/null || true)" in
+  acked:*) ;;
+  *) fail "Pi did not retire the handled recovery episode before replacement" ;;
+esac
 
 pane=$(capture)
 guard_count=$(printf '%s\n' "$pane" | grep -Fc "TURN WOULD END BLIND - supervision is off." || true)
@@ -334,6 +450,45 @@ watcher_pid=$(sed -n '1p' "$pid_file")
 arm_pid=$(ps -p "$watcher_pid" -o ppid= | tr -d ' ')
 [ -n "$arm_pid" ] || fail "re-armed watcher parent was not live"
 
+# A real same-process replacement must retire the empty orderly episode without
+# injecting a model turn, then leave one live extension-owned watcher.
+send_prompt "/new"
+wait_pid_dead "$watcher_pid" || fail "pre-replacement watcher survived /new"
+: > "$WATCH_EVENTS"
+send_prompt "Call fm_watch_arm_pi exactly once, use no other tool, then reply exactly REPLACEMENT_READY."
+wait_for_exact_line "REPLACEMENT_READY" 120 || fail "Pi replacement turn did not settle"
+i=0
+while [ "$i" -lt 120 ]; do
+  pid_file=$(find "$HOME_DIR/state" -maxdepth 3 -type f -name pid | head -1)
+  if [ -n "$pid_file" ]; then
+    replacement_pid=$(sed -n '1p' "$pid_file")
+    if kill -0 "$replacement_pid" 2>/dev/null; then
+      case "$(cat "$HOME_DIR/state/.watcher-down" 2>/dev/null || true)" in
+        acked:*) break ;;
+      esac
+    fi
+  fi
+  sleep 0.5
+  i=$((i + 1))
+done
+if [ -z "${replacement_pid:-}" ] || ! kill -0 "$replacement_pid" 2>/dev/null; then
+  fail "Pi replacement left no live watcher"
+fi
+case "$(cat "$HOME_DIR/state/.watcher-down" 2>/dev/null || true)" in
+  acked:*) ;;
+  *) fail "Pi replacement did not retire its empty recovery episode" ;;
+esac
+sleep 3
+agent_starts=$(grep -c '^agent_start$' "$WATCH_EVENTS" 2>/dev/null || true)
+arm_tool_calls=$(grep -c '^tool_call fm_watch_arm_pi$' "$WATCH_EVENTS" 2>/dev/null || true)
+rearm_followups=$(grep -c '^rearm_followup$' "$WATCH_EVENTS" 2>/dev/null || true)
+[ "$agent_starts" -eq 1 ] || fail "empty Pi replacement started $agent_starts agent turns"
+[ "$arm_tool_calls" -eq 1 ] || fail "Pi replacement made $arm_tool_calls watcher tool calls"
+[ "$rearm_followups" -eq 0 ] || fail "empty Pi replacement injected $rearm_followups recovery follow-ups"
+watcher_pid=$replacement_pid
+arm_pid=$(ps -p "$watcher_pid" -o ppid= | tr -d ' ')
+[ -n "$arm_pid" ] || fail "replacement watcher parent was not live"
+
 "$TMUX" -L "$SOCKET" send-keys -t "$SESSION" -l '/quit'
 sleep 1
 "$TMUX" -L "$SOCKET" send-keys -t "$SESSION" Enter
@@ -341,4 +496,5 @@ wait_for_text "PI_EXIT=0" 60 || fail "Pi did not exit cleanly"
 wait_pid_dead "$watcher_pid" || fail "watcher child survived clean Pi exit"
 wait_pid_dead "$arm_pid" || fail "arm child survived clean Pi exit"
 
-printf 'ok - Pi %s live E2E covered the Calm working ship, Ahoy first/later messages, legacy transcripts, near misses, and watcher continuity\n' "$PI_VERSION"
+printf 'ok - Pi %s live E2E covered watcher continuity with agent_starts=%s arm_tool_calls=%s rearm_followups=%s, the Calm working ship, Ahoy first/later messages, legacy transcripts, and near misses\n' \
+  "$PI_VERSION" "$agent_starts" "$arm_tool_calls" "$rearm_followups"

@@ -994,7 +994,7 @@ test_pi_session_transition_generation_owner() {
 #!/usr/bin/env bash
 printf 'watcher: started pid=%s\n' "$$"
 printf '%s\n' "$$" > "${FM_CHILD_PID_FILE:?}"
-printf 'arm pid=%s\n' "$$" >> "${FM_ARM_LOG:?}"
+printf 'arm pid=%s owner=%s reason=%s\n' "$$" "${FM_WATCH_EXTENSION_OWNER:-}" "${FM_WATCH_START_REASON:-}" >> "${FM_ARM_LOG:?}"
 trap 'exit 0' TERM INT
 while :; do sleep 0.2; done
 SH
@@ -1064,6 +1064,10 @@ if (!first.details?.ok || !String(first.details.message).includes("started Pi ex
 await waitFor(() => existsSync(process.env.FM_CHILD_PID_FILE), "startup child");
 const startupChild = readFileSync(process.env.FM_CHILD_PID_FILE, "utf8").trim();
 if (!pidAlive(startupChild)) throw new Error("startup child was not alive");
+const startupRow = readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n").at(-1) ?? "";
+if (!startupRow.includes("owner=pi reason=startup")) {
+  throw new Error(`startup arm omitted explicit Pi ownership or start reason: ${startupRow}`);
+}
 const staleTool = startup.getTool();
 
 async function replaceSession(previous, reason) {
@@ -1097,12 +1101,17 @@ async function replaceSession(previous, reason) {
   if (live.length !== 1) {
     throw new Error(`${reason} expected exactly one live arm child, got ${live.join(",") || "(none)"}`);
   }
+  const row = readFileSync(process.env.FM_ARM_LOG, "utf8").trim().split("\n").at(-1) ?? "";
+  if (!row.includes(`owner=pi reason=${reason}`)) {
+    throw new Error(`${reason} arm omitted explicit Pi ownership or start reason: ${row}`);
+  }
   return next;
 }
 
 let current = await replaceSession(startup, "new");
 current = await replaceSession(current, "resume");
 current = await replaceSession(current, "fork");
+current = await replaceSession(current, "reload");
 
 // Same bound instance: ordinary shutdown then session_start without a fresh factory.
 const sameInstanceChild = readFileSync(process.env.FM_CHILD_PID_FILE, "utf8").trim();
@@ -1139,7 +1148,7 @@ if (!redundant.details?.ok || !String(redundant.details.message).includes("uncha
 }
 
 // Repeated transitions keep exactly one live cycle and never revive the refusal.
-for (const reason of ["resume", "fork", "new", "resume"]) {
+for (const reason of ["resume", "fork", "reload", "new", "resume"]) {
   current = await replaceSession(current, reason);
 }
 
@@ -1159,7 +1168,7 @@ EOF
   status=$?
   expect_code 0 "$status" "Pi session transitions must rearm through an explicit generation owner"
   [ -z "$out" ] || fail "Pi session-transition generation owner test printed output: $out"
-  pass "Pi session transitions use a generation owner across /new /resume /fork, stale callbacks, and quit"
+  pass "Pi session transitions use one generation owner across /new /resume /fork /reload, stale callbacks, and quit"
 }
 
 test_pi_process_exit_cleanup_listener_lifecycle() {
