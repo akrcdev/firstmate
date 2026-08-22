@@ -23,6 +23,8 @@ batched digest rather than per-wake injections.
    terminal record, and rollback.
    Entry refuses while a live local task predates the serialized status-writer protocol, or a local task declares an unsupported protocol version; let a live pre-version task finish or genuinely migrate its instructions and return channel to the synchronized writer before entering away mode.
    Retained stopped pre-version tasks and remote secondmates are outside this live-local compatibility gate and do not block entry.
+   While away mode is active, a fresh launch or relaunch from a pre-version brief is refused even when its prior endpoint is stopped; end away mode or genuinely migrate the brief and return channel first.
+   A current-protocol claim must come from the matching generated brief provenance, so adding the protocol line by hand is not a migration.
    The flag survives a firstmate restart, so recovery re-enters afk when it is present.
 
 2. **Ensure the sub-supervisor daemon is running as a tracked background process.**
@@ -63,6 +65,7 @@ No `/back` is needed. The first genuine message is the return signal:
 - A message **without** the current operational prefix or a legacy bare marker, and **not** starting with `/afk` -> the captain is back.
   Run `bin/fm-afk-return.sh` before acting on the message that brought the captain back.
   That script owns correct-ordered daemon shutdown, durable wake presentation and post-handling acknowledgement, escalation and wedge evidence, and the return-catch-up gate.
+  It preserves non-decision wake evidence but rebuilds decision evidence under the status-presentation lock from the authoritative keyed fold, so a delayed or legacy catch-up record cannot replay a decision that closed before return.
   If it reports a firstmate-actionable `blocked:` event, remediate it immediately through the normal lifecycle, or explicitly reclassify it with a durable reason and close its decision key with `resolved [key=...]`, then run `bin/fm-afk-return.sh check`.
   Once the daemon stops, resume full per-wake responsiveness through the emitted primary-harness supervision protocol while blocker handling proceeds, so the gate never creates a blind wait.
   Do not answer a Bearings request or perform any other ordinary captain work until the check exits successfully.
