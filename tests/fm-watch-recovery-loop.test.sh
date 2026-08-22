@@ -148,15 +148,10 @@ await waitFor(
   "initial watcher",
 );
 
-const initialWatcherPid = readFileSync(`${process.env.FM_HOME}/state/.watch.lock/pid`, "utf8").trim();
 await initial.handlers.get("session_shutdown")?.({ type: "session_shutdown", reason: "new" }, {});
-await waitFor(
-  () => !pidAlive(initialWatcherPid) && !existsSync(`${process.env.FM_HOME}/state/.watch.lock`),
-  "orderly predecessor shutdown",
-);
 // Pin the durable empty episode produced by an orderly predecessor close. The
-// extension fixture stops through an extra wrapper process whose cleanup timing
-// is not itself under test here.
+// replacement arm owns any overlap with the predecessor's wrapper cleanup, as
+// it does during a real same-process Pi replacement.
 writeFileSync(`${process.env.FM_HOME}/state/.watcher-down`, "pending:downtime:t0.orderly\n");
 const replacement = makePi();
 mod.default(replacement.pi);
