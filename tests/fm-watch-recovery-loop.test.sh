@@ -330,7 +330,7 @@ EOF
 # real crew event instead of sitting in a pre-loop wait that refreshes the
 # liveness beacon and then exits with a synthetic rearm-resurface.
 test_handling_successor_does_not_go_blind() {
-  local dir home state fakebin child event_start now out queue_row
+  local dir home state fakebin child event_start event_end now out queue_row
   dir=$(make_case recovery-gap-successor)
   home="$dir/home"
   state="$dir/state"
@@ -366,7 +366,8 @@ test_handling_successor_does_not_go_blind() {
   if ! grep -q '^signal:' "$out" 2>/dev/null; then
     kill -TERM "$child" 2>/dev/null || true
     wait "$child" 2>/dev/null || true
-    fail "handling successor did not surface the crew event within a poll interval or two (waited $(( $(date +%s) - event_start ))s): $(cat "$out")"
+    event_end=$(date +%s)
+    fail "handling successor did not surface the crew event within a poll interval or two (waited $((event_end - event_start))s): $(cat "$out")"
   fi
   grep -F 'crew.status' "$out" >/dev/null \
     || { kill -TERM "$child" 2>/dev/null || true; fail "handling successor did not name the crew status file: $(cat "$out")"; }
