@@ -195,6 +195,7 @@ test_afk_start_trusts_versioned_writer_despite_quoted_legacy_prose() {
   home="$dir/home"
   state="$home/state"
   mkdir -p "$home/data/current-task" "$state"
+  # shellcheck disable=SC2016 # The quoted legacy command is intentional fixture prose.
   printf '%s\n' 'The task description quotes `echo "{state}: {one short line}" >> old.status` as historical text.' \
     > "$home/data/current-task/brief.md"
   printf '%s\n' 'window=synthetic:current-task' 'backend=tmux' 'kind=ship' \
@@ -989,21 +990,21 @@ test_signal_delivers_identical_reopening_once() {
 }
 
 test_codexapp_resolution_append_serializes_with_delivery() {
-  local dir state buffer status sent ready done resolver_rc
+  local dir state buffer status sent ready done_file resolver_rc
   dir=$(make_supercase resolution-delivery-race)
   state="$dir/state"
   buffer="$state/.subsuper-escalations"
   status="$state/race.status"
   sent="$dir/sent"
   ready="$dir/ready"
-  done="$dir/done"
+  done_file="$dir/done"
   resolver_rc="$dir/resolver-rc"
   printf 'needs-decision [key=route]: choose before delivery\n' > "$status"
   FM_STATE_OVERRIDE="$state" handle_wake "signal: $status" "$state"
   export FM_TEST_RACE_STATUS="$status"
   export FM_TEST_RACE_SENT="$sent"
   export FM_TEST_RACE_READY="$ready"
-  export FM_TEST_RACE_DONE="$done"
+  export FM_TEST_RACE_DONE="$done_file"
   export FM_TEST_RACE_RESOLVER_RC="$resolver_rc"
   inject_msg() {
     (
@@ -1073,6 +1074,7 @@ test_stale_resolution_race_suppresses_snapshot() {
   status="$state/stale-race.status"
   win="sess:fm-stale-race"
   printf 'needs-decision [key=route]: choose before stale delivery\n' > "$status"
+  # shellcheck disable=SC2218 # Capture the production function before this fixture overrides it.
   decision=$(FM_STATE_OVERRIDE="$state" classify_stale "$win" "$state")
   export FM_TEST_STALE_RACE_DECISION="$decision"
   export FM_TEST_STALE_RACE_STATUS="$status"

@@ -33,6 +33,7 @@ STATUS_FILE="$STATE/${STATUS_FILE##*/}"
 
 FM_STATE_OVERRIDE="$STATE"
 export FM_STATE_OVERRIDE
+# shellcheck source=bin/fm-wake-lib.sh
 . "$SCRIPT_DIR/fm-wake-lib.sh"
 
 if [ "$ONCE" -eq 1 ]; then
