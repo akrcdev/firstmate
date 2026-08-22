@@ -80,30 +80,77 @@ test_afk_start_reclaims_stale_daemon_lock_reused_pid() {
   pass "fm-afk-start.sh reclaims stale daemon locks whose live pid identity no longer matches"
 }
 
-test_afk_start_refuses_inflight_legacy_status_writer() {
-  local dir home state out status
-  dir=$(make_supercase afk-start-legacy-status-writer)
+test_afk_start_retires_metadata_identified_legacy_writer() {
+  local dir home state out status control_log fake_control
+  dir=$(make_supercase afk-start-legacy-status-writer-retirement)
   home="$dir/home"
   state="$home/state"
+  control_log="$dir/control.log"
+  fake_control="$dir/fm-control"
   mkdir -p "$home/data/legacy-task" "$state"
-  printf '%s\n' 'Report status by appending one line:' \
-    '   `echo "{state}: {one short line}" >> /old/home/state/legacy-task.status`' \
+  printf '%s\n' 'This replacement brief now describes the synchronized helper only.' \
     > "$home/data/legacy-task/brief.md"
-  printf '%s\n' 'window=synthetic:legacy-task' 'backend=tmux' 'kind=ship' \
+  printf '%s\n' 'window=synthetic:legacy-task' 'backend=tmux' 'kind=ship' 'spawn_gen=legacy.1' \
     > "$state/legacy-task.meta"
+  cat > "$fake_control" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> '$control_log'
+awk -F= '\$1 != "status_writer_protocol"' "\$FM_STATE_OVERRIDE/\$1.meta" \
+  > "\$FM_STATE_OVERRIDE/.\$1.meta.retired"
+printf 'status_writer_protocol=legacy-direct.retired\n' \
+  >> "\$FM_STATE_OVERRIDE/.\$1.meta.retired"
+mv "\$FM_STATE_OVERRIDE/.\$1.meta.retired" "\$FM_STATE_OVERRIDE/\$1.meta"
+printf 'stopped %s\n' "\$1"
+EOF
+  chmod +x "$fake_control"
 
-  out=$(FM_HOME="$home" FM_STATE_OVERRIDE="$state" FM_SUPERVISOR_BACKEND=unsupported "$AFK_START" 2>&1)
+  out=$(FM_HOME="$home" FM_STATE_OVERRIDE="$state" FM_SUPERVISOR_BACKEND=unsupported \
+    FM_AFK_CONTROL_OVERRIDE="$fake_control" "$AFK_START" 2>&1)
   status=$?
 
-  [ "$status" -ne 0 ] || fail "fm-afk-start.sh activated with an in-flight legacy status writer"
-  assert_contains "$out" "legacy direct status writers remain: legacy-task" \
-    "legacy writer refusal did not identify the tracked task"
-  assert_contains "$out" "rebrief or retire those tracked tasks" \
-    "legacy writer refusal did not provide its bounded upgrade path"
-  assert_not_contains "$out" "starting supervise daemon" \
-    "legacy writer refusal crossed the daemon activation boundary"
-  assert_absent "$state/.afk" "legacy writer refusal left away mode active"
-  pass "away activation fails closed until in-flight legacy status writers are retired"
+  [ "$status" -ne 0 ] || fail "unsupported daemon fixture unexpectedly activated away mode"
+  [ "$(cat "$control_log")" = 'legacy-task exit' ] \
+    || fail "pre-version worker was not retired through the lifecycle owner"
+  assert_contains "$out" "retired pre-version status writer legacy-task before activation" \
+    "legacy retirement was not surfaced before daemon activation"
+  assert_grep 'status_writer_protocol=legacy-direct.retired' "$state/legacy-task.meta" \
+    "legacy retirement was not durably tied to the retired incarnation"
+  assert_contains "$out" "starting supervise daemon" \
+    "legacy retirement did not permit activation to continue"
+  pass "mutating a brief cannot hide a metadata-identified legacy status writer"
+}
+
+test_afk_start_trusts_versioned_writer_despite_quoted_legacy_prose() {
+  local dir home state out status control_log fake_control
+  dir=$(make_supercase afk-start-versioned-status-writer)
+  home="$dir/home"
+  state="$home/state"
+  control_log="$dir/control.log"
+  fake_control="$dir/fm-control"
+  mkdir -p "$home/data/current-task" "$state"
+  printf '%s\n' 'The task description quotes `echo "{state}: {one short line}" >> old.status` as historical text.' \
+    > "$home/data/current-task/brief.md"
+  printf '%s\n' 'window=synthetic:current-task' 'backend=tmux' 'kind=ship' \
+    'spawn_gen=current.1' 'status_writer_protocol=fm-status-append.v1' \
+    > "$state/current-task.meta"
+  cat > "$fake_control" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> '$control_log'
+exit 1
+EOF
+  chmod +x "$fake_control"
+
+  out=$(FM_HOME="$home" FM_STATE_OVERRIDE="$state" FM_SUPERVISOR_BACKEND=unsupported \
+    FM_AFK_CONTROL_OVERRIDE="$fake_control" "$AFK_START" 2>&1)
+  status=$?
+
+  [ "$status" -ne 0 ] || fail "unsupported daemon fixture unexpectedly activated away mode"
+  [ ! -e "$control_log" ] || fail "versioned writer was falsely retired from quoted brief prose"
+  assert_contains "$out" "starting supervise daemon" \
+    "versioned writer did not pass the metadata compatibility boundary"
+  assert_contains "$out" "does not support supervisor backend 'unsupported'" \
+    "versioned writer did not reach the expected post-preflight daemon check"
+  pass "versioned metadata prevents quoted legacy prose from blocking activation"
 }
 
 test_daemon_state_root_uses_fm_home() {
@@ -2155,7 +2202,8 @@ test_inject_msg_defers_on_unrecognized_composer_state() {
 test_afk_start_refuses_when_flag_cannot_be_written
 test_afk_start_ignores_stale_pidfile_without_lock
 test_afk_start_reclaims_stale_daemon_lock_reused_pid
-test_afk_start_refuses_inflight_legacy_status_writer
+test_afk_start_retires_metadata_identified_legacy_writer
+test_afk_start_trusts_versioned_writer_despite_quoted_legacy_prose
 test_daemon_state_root_uses_fm_home
 test_classify_routine_signal_self
 test_classify_terminal_signal_escalates

@@ -39,9 +39,12 @@ FM_AFK_STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
 FM_AFK_DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 FM_AFK_LOCK="$FM_AFK_STATE/.supervise-daemon.lock"
 FM_AFK_DAEMON="$FM_AFK_START_DIR/fm-supervise-daemon.sh"
+FM_AFK_CONTROL="${FM_AFK_CONTROL_OVERRIDE:-$FM_AFK_START_DIR/fm-control.sh}"
 
 # shellcheck source=bin/fm-wake-lib.sh
 . "$FM_AFK_START_DIR/fm-wake-lib.sh"
+# shellcheck source=bin/fm-backend.sh
+. "$FM_AFK_START_DIR/fm-backend.sh"
 
 fm_afk_start_usage() {
   sed -n '2,14p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
@@ -131,29 +134,47 @@ fm_afk_flag_write() {  # <state-dir>
   return 1
 }
 
-fm_afk_legacy_status_writers() {
-  local meta id brief found=1
+fm_afk_status_writer_preflight() {
+  local meta id protocol out rc
   for meta in "$FM_AFK_STATE"/*.meta; do
-    [ -f "$meta" ] || continue
+    if [ ! -e "$meta" ] && [ ! -L "$meta" ]; then continue; fi
+    if [ ! -f "$meta" ] || [ -L "$meta" ]; then
+      echo "afk: refusing activation because task metadata is unsafe: $meta" >&2
+      return 1
+    fi
     id=${meta##*/}
     id=${id%.meta}
-    case "$id" in ''|*[!A-Za-z0-9._-]*) continue ;; esac
-    brief="$FM_AFK_DATA/$id/brief.md"
-    [ -f "$brief" ] && [ ! -L "$brief" ] || continue
-    if grep -F 'echo "{state}: {one short line}" >> ' "$brief" >/dev/null 2>&1; then
-      printf '%s\n' "$id"
-      found=0
+    case "$id" in
+      ''|*[!A-Za-z0-9._-]*)
+        echo "afk: refusing activation because task metadata has an invalid identity: $meta" >&2
+        return 1
+        ;;
+    esac
+    protocol=$(fm_meta_get "$meta" status_writer_protocol)
+    case "$protocol" in
+      "$FM_STATUS_WRITER_PROTOCOL_CURRENT"|legacy-direct.retired) continue ;;
+    esac
+    if out=$(FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$FM_AFK_STATE" \
+      FM_DATA_OVERRIDE="$FM_AFK_DATA" \
+      FM_CONTROL_RETIRE_STATUS_WRITER_PROTOCOL=legacy-direct.retired \
+      "$FM_AFK_CONTROL" "$id" exit 2>&1); then
+      rc=0
+    else
+      rc=$?
+    fi
+    if [ "$rc" -ne 0 ]; then
+      echo "afk: could not safely retire pre-version status writer $id; away mode remains inactive" >&2
+      [ -z "$out" ] || printf '%s\n' "$out" >&2
+      return 1
+    fi
+    if [ "$(fm_meta_get "$meta" status_writer_protocol)" = legacy-direct.retired ]; then
+      echo "afk: retired pre-version status writer $id before activation" >&2
+    else
+      echo "afk: could not confirm status-writer retirement for $id; away mode remains inactive" >&2
+      return 1
     fi
   done
-  return "$found"
-}
-
-fm_afk_status_writer_preflight() {
-  local legacy
-  legacy=$(fm_afk_legacy_status_writers) || return 0
-  echo "afk: refusing activation while legacy direct status writers remain: $(printf '%s' "$legacy" | paste -sd, -)" >&2
-  echo "afk: rebrief or retire those tracked tasks, then retry; ordinary supervision remains active" >&2
-  return 1
+  return 0
 }
 
 fm_afk_start_main() {

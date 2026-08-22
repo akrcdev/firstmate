@@ -236,6 +236,24 @@ test_exit_types_each_harness_verified_command() {
   pass "fm-control exit: every verified harness gets its own verified exit command"
 }
 
+test_exit_can_durably_retire_a_preversion_status_writer() {
+  local dir out rc meta
+  dir=$(new_case exit-status-writer-retirement)
+  add_task "$dir" t1 claude
+  meta="$dir/home/state/t1.meta"
+  alive_as "$dir" claude
+
+  out=$(FM_CONTROL_RETIRE_STATUS_WRITER_PROTOCOL=legacy-direct.retired \
+    run_control "$dir" t1 exit); rc=$?
+
+  expect_code 0 "$rc" "legacy status-writer retirement should stop the worker and update metadata"$'\n'"$out"
+  assert_grep 'status_writer_protocol=legacy-direct.retired' "$meta" \
+    "legacy status-writer retirement did not update the stopped incarnation"
+  assert_contains "$out" 'stopped t1 harness=claude' \
+    "legacy status-writer retirement lost the normal verified exit result"
+  pass "fm-control exit atomically retires a pre-version status writer"
+}
+
 test_interrupt_sends_each_harness_verified_key() {
   local dir out rc harness expected key repeat clear got want
   for harness in $VERIFIED_HARNESSES; do
@@ -871,6 +889,7 @@ test_fm_send_still_marks_the_same_secondmate_task() {
 }
 
 test_exit_types_each_harness_verified_command
+test_exit_can_durably_retire_a_preversion_status_writer
 test_interrupt_sends_each_harness_verified_key
 test_opencode_interrupts_twice_and_others_once
 test_unverified_harness_is_refused
