@@ -430,33 +430,6 @@ retire_busy_incarnation() {
   fi
 }
 
-retire_status_writer_protocol() {
-  local requested=${FM_CONTROL_RETIRE_STATUS_WRITER_PROTOCOL:-} protocol lock tmp
-  [ -n "$requested" ] || return 0
-  [ "$requested" = legacy-direct.retired ] \
-    || die "unsupported status-writer retirement protocol '$requested'"
-  protocol=$(fm_meta_get "$META" status_writer_protocol)
-  [ "$protocol" != "$FM_STATUS_WRITER_PROTOCOL_CURRENT" ] \
-    || die "task $ID already records the synchronized status-writer protocol"
-  lock=$(fm_meta_lock_path "$META") \
-    || die "task $ID status-writer retirement could not resolve its metadata lock"
-  fm_lock_acquire_wait "$lock" \
-    || die "task $ID status-writer retirement could not acquire its metadata lock"
-  tmp=$(mktemp "$STATE/.$ID.meta.status-writer.XXXXXX") || {
-    fm_lock_release "$lock" || true
-    die "task $ID status-writer retirement could not create its metadata update"
-  }
-  if ! awk -F= '$1 != "status_writer_protocol"' "$META" > "$tmp" \
-     || ! printf 'status_writer_protocol=%s\n' "$requested" >> "$tmp" \
-     || ! mv -f "$tmp" "$META"; then
-    rm -f "$tmp" 2>/dev/null || true
-    fm_lock_release "$lock" || true
-    die "task $ID stopped but its status-writer retirement could not be recorded"
-  fi
-  fm_lock_release "$lock" \
-    || die "task $ID stopped but its status-writer retirement lock could not be released"
-}
-
 # do_exit: stop the running agent, preserving endpoint and worktree. Prints
 # `already-stopped` or `stopped`.
 do_exit() {
@@ -881,7 +854,6 @@ case "$VERB" in
     ;;
   exit)
     result=$(do_exit)
-    retire_status_writer_protocol
     echo "$result $ID harness=$HARNESS backend=$BACKEND endpoint=$T worktree=$WT"
     ;;
   relaunch)

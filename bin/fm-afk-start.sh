@@ -36,10 +36,8 @@ FM_AFK_START_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$FM_AFK_START_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 FM_AFK_STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
-FM_AFK_DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 FM_AFK_LOCK="$FM_AFK_STATE/.supervise-daemon.lock"
 FM_AFK_DAEMON="$FM_AFK_START_DIR/fm-supervise-daemon.sh"
-FM_AFK_CONTROL="${FM_AFK_CONTROL_OVERRIDE:-$FM_AFK_START_DIR/fm-control.sh}"
 
 # shellcheck source=bin/fm-wake-lib.sh
 . "$FM_AFK_START_DIR/fm-wake-lib.sh"
@@ -135,7 +133,7 @@ fm_afk_flag_write() {  # <state-dir>
 }
 
 fm_afk_status_writer_preflight() {
-  local meta id protocol out rc
+  local meta id protocol backend target state
   for meta in "$FM_AFK_STATE"/*.meta; do
     if [ ! -e "$meta" ] && [ ! -L "$meta" ]; then continue; fi
     if [ ! -f "$meta" ] || [ -L "$meta" ]; then
@@ -150,6 +148,7 @@ fm_afk_status_writer_preflight() {
         return 1
         ;;
     esac
+    [ -z "$(fm_meta_get "$meta" remote_host)" ] || continue
     protocol=$(fm_meta_get "$meta" status_writer_protocol)
     case "$protocol" in
       "$FM_STATUS_WRITER_PROTOCOL_CURRENT"|legacy-direct.retired) continue ;;
@@ -159,25 +158,13 @@ fm_afk_status_writer_preflight() {
         return 1
         ;;
     esac
-    if out=$(FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$FM_AFK_STATE" \
-      FM_DATA_OVERRIDE="$FM_AFK_DATA" \
-      FM_CONTROL_RETIRE_STATUS_WRITER_PROTOCOL=legacy-direct.retired \
-      "$FM_AFK_CONTROL" "$id" exit 2>&1); then
-      rc=0
-    else
-      rc=$?
-    fi
-    if [ "$rc" -ne 0 ]; then
-      echo "afk: could not safely retire pre-version status writer $id; away mode remains inactive" >&2
-      [ -z "$out" ] || printf '%s\n' "$out" >&2
-      return 1
-    fi
-    if [ "$(fm_meta_get "$meta" status_writer_protocol)" = legacy-direct.retired ]; then
-      echo "afk: retired pre-version status writer $id before activation" >&2
-    else
-      echo "afk: could not confirm status-writer retirement for $id; away mode remains inactive" >&2
-      return 1
-    fi
+    fm_backend_validate_task_endpoint "$meta" "$id" >/dev/null 2>&1 || continue
+    backend=$FM_BACKEND_VALIDATED_BACKEND
+    target=$FM_BACKEND_VALIDATED_TARGET
+    state=$(fm_backend_agent_state "$backend" "$target" 2>/dev/null)
+    [ "$state" = alive ] || continue
+    echo "afk: live local pre-version status writer $id must finish or relaunch before away mode can start" >&2
+    return 1
   done
   return 0
 }
