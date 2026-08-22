@@ -20,6 +20,10 @@ function runProcess(command, args, input = "") {
     child.stderr.on("data", (chunk) => {
       stderr += chunk.toString();
     });
+    child.stdin.on("error", () => {
+      // A guard may decide and exit before consuming its small JSON input.
+      // Its close status remains the authoritative result.
+    });
     child.on("error", () => resolve({ code: 0, stdout: "", stderr: "" }));
     child.on("close", (code) => resolve({ code: code ?? 0, stdout, stderr }));
     child.stdin.end(input);
