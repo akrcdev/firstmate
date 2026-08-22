@@ -1661,6 +1661,19 @@ else
   BRIEF="$DATA/$ID/brief.md"
 fi
 [ -f "$BRIEF" ] || { echo "error: no brief at $BRIEF" >&2; exit 1; }
+BRIEF_STATUS_WRITER_PROTOCOL=$(awk -v current="$FM_STATUS_WRITER_PROTOCOL_CURRENT" '
+  /^Status writer protocol:/ {
+    count++
+    if ($0 != "Status writer protocol: " current) invalid=1
+  }
+  END {
+    if (count > 1 || invalid) exit 1
+    if (count == 1) print current
+  }
+' "$BRIEF") || {
+  echo "error: $BRIEF declares an unsupported or ambiguous status-writer protocol" >&2
+  exit 1
+}
 
 delivery_rigor_rank() {  # <mode> -> 3 (most rigor) .. 1 (least); 0 = not a task mode
   case "$1" in
@@ -2664,8 +2677,8 @@ preserve_relaunch_meta() {
   echo "project=$PROJ_ABS"
   echo "harness=$HARNESS"
   echo "kind=$KIND"
-  if [ "$RELAUNCH" -eq 0 ]; then
-    echo "status_writer_protocol=$FM_STATUS_WRITER_PROTOCOL_CURRENT"
+  if [ "$RELAUNCH" -eq 0 ] && [ -n "$BRIEF_STATUS_WRITER_PROTOCOL" ]; then
+    echo "status_writer_protocol=$BRIEF_STATUS_WRITER_PROTOCOL"
   elif [ -n "$RELAUNCH_STATUS_WRITER_PROTOCOL" ] \
     && [ "$RELAUNCH_STATUS_WRITER_PROTOCOL" != legacy-direct.retired ]; then
     echo "status_writer_protocol=$RELAUNCH_STATUS_WRITER_PROTOCOL"

@@ -206,6 +206,8 @@ test_ship_modes_generate_clean_briefs() {
     expect_code 0 "$status" "fm-brief.sh $id --mode $mode should exit 0"
     brief="$home/data/$id/brief.md"
     assert_present "$brief" "$id: brief was not scaffolded"
+    grep -qx "Status writer protocol: fm-status-append.v1" "$brief" \
+      || fail "$id: brief did not persist its synchronized status-writer protocol"
     assert_grep "# Definition of done" "$brief" "$id: brief missing Definition of done section"
     grep -qx "Delivery contract: mode=$mode" "$brief" \
       || fail "$id: brief did not record its machine-readable delivery contract line"

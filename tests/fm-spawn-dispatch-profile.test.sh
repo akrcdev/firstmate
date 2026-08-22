@@ -93,8 +93,8 @@ make_spawn_case() {
   fm_git_worktree "$proj" "$wt" "wt-$name"
   touch "$home/state/.last-watcher-beat"
   for id in "$@"; do
-    mkdir -p "$home/data/$id"
-    printf 'brief for %s\n' "$id" > "$home/data/$id/brief.md"
+    FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" "$(basename "$proj")" \
+      --mode no-mistakes >/dev/null
   done
   printf '%s\n' "$case_dir|$home|$proj|$wt|$fakebin|$launchlog"
 }
@@ -110,7 +110,9 @@ make_seeded_secondmate_home() {
   mkdir -p "$home/bin" "$home/data"
   printf '# Firstmate\n' > "$home/AGENTS.md"
   printf '%s\n' "$id" > "$home/.fm-secondmate-home"
-  printf 'charter for %s\n' "$id" > "$home/data/charter.md"
+  FM_HOME="$home" FM_SECONDMATE_CHARTER="charter for $id" FM_SECONDMATE_SCOPE=scope \
+    "$ROOT/bin/fm-brief.sh" charter --secondmate --no-projects >/dev/null
+  mv "$home/data/charter/brief.md" "$home/data/charter.md"
 }
 
 run_spawn() {
@@ -828,6 +830,31 @@ test_active_dispatch_profile_does_not_block_secondmate_launch() {
   pass "active crew-dispatch profile does not block secondmate launches"
 }
 
+test_normal_spawn_uses_brief_status_writer_protocol() {
+  local rec legacy_id current_id out status
+  legacy_id=profile-legacy-brief-z20
+  current_id=profile-current-brief-z20
+  rec=$(make_spawn_case profile-brief-protocol claude "$legacy_id")
+  read_case_record "$rec"
+  printf 'legacy brief for %s\n' "$legacy_id" > "$HOME_DIR/data/$legacy_id/brief.md"
+
+  out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$legacy_id" "$PROJ_DIR")
+  status=$?
+  expect_code 0 "$status" "normal spawn of a pre-protocol brief should remain supported"
+  if grep -q '^status_writer_protocol=' "$HOME_DIR/state/$legacy_id.meta"; then
+    fail "pre-protocol brief was falsely promoted to the synchronized writer"
+  fi
+
+  FM_HOME="$HOME_DIR" "$ROOT/bin/fm-brief.sh" "$current_id" "$(basename "$PROJ_DIR")" \
+    --mode no-mistakes >/dev/null 2>&1
+  out=$(run_ship_spawn "$HOME_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$LAUNCH_LOG" "$current_id" "$PROJ_DIR")
+  status=$?
+  expect_code 0 "$status" "normal spawn of a newly generated brief should succeed"
+  grep -qx 'status_writer_protocol=fm-status-append.v1' "$HOME_DIR/state/$current_id.meta" \
+    || fail "newly generated brief did not propagate its synchronized writer protocol"
+  pass "normal spawn preserves legacy briefs and propagates generated writer protocols"
+}
+
 test_no_profile_keeps_claude_profile_defaults
 test_non_cursor_launch_clears_inherited_cursor_markers
 test_relative_home_overrides_launch_with_absolute_cross_process_paths
@@ -859,5 +886,6 @@ test_claude_forwards_firstmate_config_dir_when_set
 test_claude_omits_config_dir_prefix_when_unset
 test_non_claude_harness_ignores_config_dir
 test_active_dispatch_profile_does_not_block_secondmate_launch
+test_normal_spawn_uses_brief_status_writer_protocol
 
 echo "# all fm-spawn-dispatch-profile tests passed"

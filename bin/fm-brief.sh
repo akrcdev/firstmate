@@ -169,6 +169,16 @@ fi
 BRIEF="$DATA/$ID/brief.md"
 [ -e "$BRIEF" ] && { echo "error: $BRIEF already exists" >&2; exit 1; }
 mkdir -p "$DATA/$ID"
+FM_STATUS_WRITER_PROTOCOL_CURRENT=$(
+  FM_ROOT_OVERRIDE=
+  FM_STATE_OVERRIDE=
+  FM_ROOT="$FM_ROOT"
+  FM_HOME="$FM_HOME"
+  STATE="$STATE"
+  # shellcheck source=bin/fm-wake-lib.sh
+  . "$SCRIPT_DIR/fm-wake-lib.sh"
+  printf '%s\n' "$FM_STATUS_WRITER_PROTOCOL_CURRENT"
+)
 
 shell_quote() {
   printf "'"
@@ -202,6 +212,7 @@ else
 fi
 cat > "$BRIEF" <<EOF
 You are a persistent second mate managed by the main firstmate. Work on your own; do not wait for a human.
+Status writer protocol: $FM_STATUS_WRITER_PROTOCOL_CURRENT
 
 # Charter
 $SECONDMATE_CHARTER
@@ -302,6 +313,7 @@ fi
 if [ "$KIND" = scout ]; then
 cat > "$BRIEF" <<EOF
 You are a crewmate: an autonomous worker agent managed by firstmate. Work on your own; do not wait for a human.
+Status writer protocol: $FM_STATUS_WRITER_PROTOCOL_CURRENT
 
 # Task
 {TASK}
@@ -413,6 +425,7 @@ DOD=${DOD%$'\n'}
 
 cat > "$BRIEF" <<EOF
 You are a crewmate: an autonomous worker agent managed by firstmate. Work on your own; do not wait for a human.
+Status writer protocol: $FM_STATUS_WRITER_PROTOCOL_CURRENT
 
 # Task
 {TASK}

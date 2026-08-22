@@ -21,7 +21,7 @@ batched digest rather than per-wake injections.
 1. **Enter the lifecycle through `bin/fm-afk-launch.sh`.**
    This owns the durable state write, session-scoped stale-artifact clearing,
    terminal record, and rollback.
-   Entry refuses while a live local task predates the serialized status-writer protocol, or a local task declares an unsupported protocol version; let a live pre-version task finish or relaunch it before entering away mode.
+   Entry refuses while a live local task predates the serialized status-writer protocol, or a local task declares an unsupported protocol version; let a live pre-version task finish or genuinely migrate its instructions and return channel to the synchronized writer before entering away mode.
    Retained stopped pre-version tasks and remote secondmates are outside this live-local compatibility gate and do not block entry.
    The flag survives a firstmate restart, so recovery re-enters afk when it is present.
 
