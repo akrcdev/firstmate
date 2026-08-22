@@ -26,6 +26,8 @@ MAX_MANIFEST_BYTES=1048576
 
 # shellcheck source=bin/fm-project-origin-lib.sh
 . "$SCRIPT_DIR/fm-project-origin-lib.sh"
+# shellcheck source=bin/fm-brief-provenance-lib.sh
+. "$SCRIPT_DIR/fm-brief-provenance-lib.sh"
 
 die() { printf 'error: %s\n' "$1" >&2; exit 1; }
 
@@ -79,6 +81,7 @@ rollback() {
         [ -n "$project" ] && rm -rf -- "$FM_HOME/projects/$project"
       done < "$CREATED_PROJECTS"
       restore_owned_file data/charter.md || true
+      restore_owned_file data/charter.provenance || true
       restore_owned_file data/projects.md || true
       restore_owned_file .fm-secondmate-home || true
       restore_owned_file .fm-secondmate-parent || true
@@ -98,6 +101,7 @@ SCHEMA=$(manifest_value "$TMP/manifest" schema || true)
 [ "$SCHEMA" = fm-remote-home-provision.v1 ] || die "incompatible provisioning manifest"
 ID_B64=$(manifest_value "$TMP/manifest" id_b64 || true)
 CHARTER_B64=$(manifest_value "$TMP/manifest" charter_b64 || true)
+CHARTER_PROVENANCE_B64=$(manifest_value "$TMP/manifest" charter_provenance_b64 || true)
 # Optional so a manifest sent by a not-yet-updated parent (predating this
 # field) still provisions; the durable parent record below simply omits the
 # host in that case rather than refusing the whole seed.
@@ -105,6 +109,10 @@ PARENT_HOST_B64=$(manifest_value "$TMP/manifest" parent_host_b64 || true)
 COUNT=$(manifest_value "$TMP/manifest" project_count || true)
 base64_decode_to "$ID_B64" "$TMP/id" || die "manifest id is not valid base64"
 base64_decode_to "$CHARTER_B64" "$TMP/charter" || die "manifest charter is not valid base64"
+if [ -n "$CHARTER_PROVENANCE_B64" ]; then
+  base64_decode_to "$CHARTER_PROVENANCE_B64" "$TMP/charter.provenance" \
+    || die "manifest charter provenance is not valid base64"
+fi
 PARENT_HOST=
 if [ -n "$PARENT_HOST_B64" ]; then
   base64_decode_to "$PARENT_HOST_B64" "$TMP/parent-host" || die "manifest parent host is not valid base64"
@@ -145,6 +153,21 @@ PROVISION_LOCK="$STATE/.remote-home-provision-$HOME_LOCK_KEY.lock"
 fm_lock_acquire_wait "$PROVISION_LOCK"
 PROVISION_LOCK_HELD=1
 
+CHARTER_STATUS_WRITER_PROTOCOL=$(awk -v current="$FM_STATUS_WRITER_PROTOCOL_CURRENT" '
+  /^Status writer protocol:/ {
+    count++
+    if ($0 != "Status writer protocol: " current) invalid=1
+  }
+  END {
+    if (count > 1 || invalid) exit 1
+    if (count == 1) print current
+  }
+' "$TMP/charter") || die "manifest charter declares an unsupported or ambiguous status-writer protocol"
+if [ "$CHARTER_STATUS_WRITER_PROTOCOL" = "$FM_STATUS_WRITER_PROTOCOL_CURRENT" ]; then
+  fm_brief_provenance_verify "$TMP/charter" "$TMP/charter.provenance" "$FM_STATUS_WRITER_PROTOCOL_CURRENT" \
+    || die "manifest charter has missing, contradictory, or unverifiable status-writer provenance"
+fi
+
 if [ -e "$FM_HOME" ] || [ -L "$FM_HOME" ]; then
   [ -d "$FM_HOME" ] && [ ! -L "$FM_HOME" ] || die "remote home exists but is not a safe directory"
   [ -f "$FM_HOME/AGENTS.md" ] && [ ! -L "$FM_HOME/AGENTS.md" ] \
@@ -157,7 +180,7 @@ if [ -e "$FM_HOME" ] || [ -L "$FM_HOME" ]; then
     fi
   done
   mkdir -p "$TMP/before/data"
-  for rel in data/charter.md data/projects.md .fm-secondmate-home .fm-secondmate-parent; do
+  for rel in data/charter.md data/charter.provenance data/projects.md .fm-secondmate-home .fm-secondmate-parent; do
     existing="$FM_HOME/$rel"
     if [ -e "$existing" ] || [ -L "$existing" ]; then
       [ -f "$existing" ] && [ ! -L "$existing" ] || die "existing remote home has unsafe owned file: $rel"
@@ -242,6 +265,13 @@ done < <(grep '^project=' "$TMP/manifest")
 cp "$TMP/charter" "$FM_HOME/data/charter.md.tmp.$$"
 chmod 600 "$FM_HOME/data/charter.md.tmp.$$"
 mv -f -- "$FM_HOME/data/charter.md.tmp.$$" "$FM_HOME/data/charter.md"
+if [ -f "$TMP/charter.provenance" ]; then
+  cp "$TMP/charter.provenance" "$FM_HOME/data/charter.provenance.tmp.$$"
+  chmod 600 "$FM_HOME/data/charter.provenance.tmp.$$"
+  mv -f -- "$FM_HOME/data/charter.provenance.tmp.$$" "$FM_HOME/data/charter.provenance"
+else
+  rm -f -- "$FM_HOME/data/charter.provenance"
+fi
 cp "$PROJECT_REG" "$FM_HOME/data/projects.md.tmp.$$"
 mv -f -- "$FM_HOME/data/projects.md.tmp.$$" "$FM_HOME/data/projects.md"
 {

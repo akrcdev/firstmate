@@ -113,6 +113,7 @@ make_seeded_secondmate_home() {
   FM_HOME="$home" FM_SECONDMATE_CHARTER="charter for $id" FM_SECONDMATE_SCOPE=scope \
     "$ROOT/bin/fm-brief.sh" charter --secondmate --no-projects >/dev/null
   mv "$home/data/charter/brief.md" "$home/data/charter.md"
+  mv "$home/data/charter/brief.provenance" "$home/data/charter.provenance"
 }
 
 run_spawn() {

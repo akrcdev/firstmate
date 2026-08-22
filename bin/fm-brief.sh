@@ -179,6 +179,16 @@ FM_STATUS_WRITER_PROTOCOL_CURRENT=$(
   . "$SCRIPT_DIR/fm-wake-lib.sh"
   printf '%s\n' "$FM_STATUS_WRITER_PROTOCOL_CURRENT"
 )
+# shellcheck source=bin/fm-brief-provenance-lib.sh
+. "$SCRIPT_DIR/fm-brief-provenance-lib.sh"
+
+publish_brief() {
+  fm_brief_provenance_create "$BRIEF" "${BRIEF%.md}.provenance" "$FM_STATUS_WRITER_PROTOCOL_CURRENT" || {
+    rm -f -- "$BRIEF" "${BRIEF%.md}.provenance"
+    echo "error: could not publish brief provenance for $BRIEF" >&2
+    exit 1
+  }
+}
 
 shell_quote() {
   printf "'"
@@ -215,10 +225,14 @@ You are a persistent second mate managed by the main firstmate. Work on your own
 Status writer protocol: $FM_STATUS_WRITER_PROTOCOL_CURRENT
 
 # Charter
+<!-- fm-brief-editable:start:charter -->
 $SECONDMATE_CHARTER
+<!-- fm-brief-editable:end -->
 
 # Routing scope
+<!-- fm-brief-editable:start:routing-scope -->
 $SECONDMATE_SCOPE
+<!-- fm-brief-editable:end -->
 
 # Project clones
 $PROJECT_CLONES_BODY
@@ -268,6 +282,7 @@ When you have no assigned or in-flight work after that reconciliation, go idle a
 An empty queue is a healthy resting state, not a cue to invent work: never spawn a survey, audit, or any self-directed "find work" task on your own initiative.
 If this charter cannot be carried out, append \`blocked: {why}\` or \`failed: {why}\` to the main status file and stop.
 EOF
+publish_brief
 if [ "$SECONDMATE_CHARTER" = "{TASK}" ]; then
   echo "scaffolded: $BRIEF (secondmate charter; replace {TASK})"
 else
@@ -316,7 +331,9 @@ You are a crewmate: an autonomous worker agent managed by firstmate. Work on you
 Status writer protocol: $FM_STATUS_WRITER_PROTOCOL_CURRENT
 
 # Task
+<!-- fm-brief-editable:start:task -->
 {TASK}
+<!-- fm-brief-editable:end -->
 
 $HERDR_SECTION
 
@@ -357,6 +374,7 @@ Before reporting done, read and follow \`$FM_ROOT/.agents/skills/captain-hold-li
 When the report is complete, append \`done: {one-line conclusion}\` to the status file and stop.
 If your findings reveal work that should ship (e.g. you reproduced a bug and the fix is clear), say so in the report; firstmate may promote this task in place, and you would then receive mode-specific ship instructions as a follow-up message.
 EOF
+publish_brief
 echo "scaffolded: $BRIEF (scout; replace {TASK})"
 exit 0
 fi
@@ -428,7 +446,9 @@ You are a crewmate: an autonomous worker agent managed by firstmate. Work on you
 Status writer protocol: $FM_STATUS_WRITER_PROTOCOL_CURRENT
 
 # Task
+<!-- fm-brief-editable:start:task -->
 {TASK}
+<!-- fm-brief-editable:end -->
 
 $HERDR_SECTION
 
@@ -476,4 +496,5 @@ Keep it proportionate: skip \`AGENTS.md\` edits for trivial tasks that produced 
 
 $DOD
 EOF
+publish_brief
 echo "scaffolded: $BRIEF (ship, mode=$MODE; replace {TASK})"

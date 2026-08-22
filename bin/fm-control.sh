@@ -134,6 +134,8 @@ DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 . "$SCRIPT_DIR/fm-pr-lib.sh"
 # shellcheck source=bin/fm-wake-lib.sh
 . "$SCRIPT_DIR/fm-wake-lib.sh"
+# shellcheck source=bin/fm-brief-provenance-lib.sh
+. "$SCRIPT_DIR/fm-brief-provenance-lib.sh"
 
 POLL=${FM_CONTROL_POLL:-0.5}
 SETTLE_WAIT=${FM_CONTROL_SETTLE_WAIT:-5}
@@ -539,6 +541,15 @@ journal_write() {  # <phase> [extra-line]...
   return 1
 }
 
+restore_relaunch_brief() {
+  cp -p "$BRIEF_PRIOR" "$RELAUNCH_BRIEF" 2>/dev/null || return 1
+  if [ -f "${RELAUNCH_BRIEF%.md}.provenance" ] \
+     && grep -Fx "Status writer protocol: $FM_STATUS_WRITER_PROTOCOL_CURRENT" "$RELAUNCH_BRIEF" >/dev/null 2>&1; then
+    fm_brief_provenance_create "$RELAUNCH_BRIEF" "${RELAUNCH_BRIEF%.md}.provenance" "$FM_STATUS_WRITER_PROTOCOL_CURRENT" \
+      || return 1
+  fi
+}
+
 relaunch_rollback() {
   local state
   [ "$RELAUNCH_ACTIVE" = 1 ] || return 0
@@ -549,7 +560,7 @@ relaunch_rollback() {
       # The old agent was never touched. Restore the instructions byte-exact so
       # a refused relaunch leaves nothing behind.
       if [ -n "$RELAUNCH_BRIEF" ] && [ -f "$BRIEF_PRIOR" ]; then
-        cp -p "$BRIEF_PRIOR" "$RELAUNCH_BRIEF" 2>/dev/null || true
+        restore_relaunch_brief || true
       fi
       journal_write "failed:$RELAUNCH_PHASE" "rollback=instructions-restored" || true
       echo "error: relaunch of $ID was refused before its agent was touched; nothing changed" >&2
@@ -559,7 +570,7 @@ relaunch_rollback() {
       case "$state" in
         alive)
           if [ -n "$RELAUNCH_BRIEF" ] && [ -f "$BRIEF_PRIOR" ]; then
-            cp -p "$BRIEF_PRIOR" "$RELAUNCH_BRIEF" 2>/dev/null || true
+            restore_relaunch_brief || true
           fi
           journal_write "failed:$RELAUNCH_PHASE" "rollback=instructions-restored-agent-alive" || true
           echo "error: relaunch of $ID failed while stopping the old agent, which is still running; its original instructions were restored" >&2
@@ -743,12 +754,17 @@ safe_checkpoint() {
 # never rewritten: a secondmate reconciles its own home's records at startup,
 # so the note stays parent-side audit evidence.
 record_note() {
-  local stamp
+  local stamp provenance
   [ -n "$NOTE" ] || return 0
   stamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   printf '%s\n' "$NOTE" > "$NOTE_FILE"
   case "$KIND" in
     ship|scout)
+      provenance="${RELAUNCH_BRIEF%.md}.provenance"
+      if grep -Fx "Status writer protocol: $FM_STATUS_WRITER_PROTOCOL_CURRENT" "$RELAUNCH_BRIEF" >/dev/null 2>&1; then
+        fm_brief_provenance_verify "$RELAUNCH_BRIEF" "$provenance" "$FM_STATUS_WRITER_PROTOCOL_CURRENT" \
+          || die "could not verify task $ID's status-writer provenance before recording the progress note"
+      fi
       cp -p "$RELAUNCH_BRIEF" "$BRIEF_PRIOR" \
         || die "could not preserve task $ID's instructions before recording the progress note"
       {
@@ -761,6 +777,10 @@ record_note() {
         printf '%s\n' "$NOTE"
       } >> "$RELAUNCH_BRIEF" \
         || die "could not append the progress note to task $ID's instructions"
+      if grep -Fx "Status writer protocol: $FM_STATUS_WRITER_PROTOCOL_CURRENT" "$RELAUNCH_BRIEF" >/dev/null 2>&1; then
+        fm_brief_provenance_create "$RELAUNCH_BRIEF" "$provenance" "$FM_STATUS_WRITER_PROTOCOL_CURRENT" \
+          || die "could not update task $ID's status-writer provenance after recording the progress note"
+      fi
       ;;
   esac
 }

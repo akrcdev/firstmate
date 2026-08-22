@@ -49,6 +49,8 @@ SUB_HOME_PARENT_MARKER=".fm-secondmate-parent"
 . "$SCRIPT_DIR/fm-secondmate-charter-lib.sh"
 # shellcheck source=bin/fm-wake-lib.sh
 . "$SCRIPT_DIR/fm-wake-lib.sh"
+# shellcheck source=bin/fm-brief-provenance-lib.sh
+. "$SCRIPT_DIR/fm-brief-provenance-lib.sh"
 
 usage() {
   echo "usage: fm-home-seed.sh <id> <home|-> {<project>...|--no-projects}" >&2
@@ -287,7 +289,7 @@ validate_operational_dirs() {
 validate_seed_leaf_files() {
   local home=$1 label path abs_home abs_path
   abs_home=$(resolved_path "$home")
-  for label in "data/projects.md" "data/charter.md" "$SUB_HOME_MARKER" "$SUB_HOME_PARENT_MARKER"; do
+  for label in "data/projects.md" "data/charter.md" "data/charter.provenance" "$SUB_HOME_MARKER" "$SUB_HOME_PARENT_MARKER"; do
     path="$home/$label"
     if [ -L "$path" ]; then
       echo "error: secondmate leaf file must not be a symlink: $path" >&2
@@ -630,6 +632,7 @@ seed_rollback() {
 
   if [ -n "${SEED_PARENT_BRIEF:-}" ] && [ "$SEED_PARENT_BRIEF_CREATED" = 1 ]; then
     rm -f "$SEED_PARENT_BRIEF" 2>/dev/null || true
+    rm -f "${SEED_PARENT_BRIEF%.md}.provenance" 2>/dev/null || true
   fi
   if [ -n "${SEED_PARENT_BRIEF:-}" ] && [ "$SEED_PARENT_BRIEF_DIR_CREATED" = 1 ]; then
     rmdir "$(dirname "$SEED_PARENT_BRIEF")" 2>/dev/null || true
@@ -651,6 +654,7 @@ seed_rollback() {
         restore_seed_file "$SEED_MARKER_EXISTED" "$SEED_BACKUP_DIR/marker" "$SEED_HOME/$SUB_HOME_MARKER"
         restore_seed_file "$SEED_PARENT_MARKER_EXISTED" "$SEED_BACKUP_DIR/parent-marker" "$SEED_HOME/$SUB_HOME_PARENT_MARKER"
         restore_seed_file "$SEED_CHARTER_EXISTED" "$SEED_BACKUP_DIR/charter.md" "$SEED_HOME/data/charter.md"
+        restore_seed_file "$SEED_CHARTER_PROVENANCE_EXISTED" "$SEED_BACKUP_DIR/charter.provenance" "$SEED_HOME/data/charter.provenance"
         restore_seed_file "$SEED_SUB_REG_EXISTED" "$SEED_BACKUP_DIR/sub-projects.md" "$SEED_HOME/data/projects.md"
       fi
     fi
@@ -850,6 +854,7 @@ seed_home() {
   SEED_PARENT_BRIEF_DIR_CREATED=0
   SEED_SUB_REG_EXISTED=0
   SEED_CHARTER_EXISTED=0
+  SEED_CHARTER_PROVENANCE_EXISTED=0
   SEED_MARKER_EXISTED=0
   if [ -f "$REG" ]; then
     SEED_PARENT_REG_EXISTED=1
@@ -890,6 +895,10 @@ seed_home() {
     SEED_CHARTER_EXISTED=1
     cp "$home/data/charter.md" "$SEED_BACKUP_DIR/charter.md"
   fi
+  if [ -f "$home/data/charter.provenance" ]; then
+    SEED_CHARTER_PROVENANCE_EXISTED=1
+    cp "$home/data/charter.provenance" "$SEED_BACKUP_DIR/charter.provenance"
+  fi
   if [ -f "$home/$SUB_HOME_MARKER" ]; then
     SEED_MARKER_EXISTED=1
     cp "$home/$SUB_HOME_MARKER" "$SEED_BACKUP_DIR/marker"
@@ -927,6 +936,25 @@ seed_home() {
     echo "error: secondmate charter brief at $SEED_PARENT_BRIEF has an empty Routing scope section; fill it before seeding" >&2
     return 1
   }
+  brief_status_writer_protocol=$(awk -v current="$FM_STATUS_WRITER_PROTOCOL_CURRENT" '
+    /^Status writer protocol:/ {
+      count++
+      if ($0 != "Status writer protocol: " current) invalid=1
+    }
+    END {
+      if (count > 1 || invalid) exit 1
+      if (count == 1) print current
+    }
+  ' "$SEED_PARENT_BRIEF") || {
+    echo "error: $SEED_PARENT_BRIEF declares an unsupported or ambiguous status-writer protocol" >&2
+    return 1
+  }
+  if [ "$brief_status_writer_protocol" = "$FM_STATUS_WRITER_PROTOCOL_CURRENT" ]; then
+    fm_brief_provenance_verify "$SEED_PARENT_BRIEF" "${SEED_PARENT_BRIEF%.md}.provenance" "$FM_STATUS_WRITER_PROTOCOL_CURRENT" || {
+      echo "error: $SEED_PARENT_BRIEF has missing, contradictory, or unverifiable status-writer provenance" >&2
+      return 1
+    }
+  fi
 
   for project in "$@"; do
     project_dst=$(validate_project_destination "$home" "$project") || return 1
@@ -944,6 +972,11 @@ seed_home() {
   done
 
   cp "$SEED_PARENT_BRIEF" "$home/data/charter.md"
+  if [ "$brief_status_writer_protocol" = "$FM_STATUS_WRITER_PROTOCOL_CURRENT" ]; then
+    fm_brief_provenance_create "$home/data/charter.md" "$home/data/charter.provenance" "$FM_STATUS_WRITER_PROTOCOL_CURRENT" || return 1
+  else
+    rm -f -- "$home/data/charter.provenance"
+  fi
 
   projects_csv=$(join_projects "$@")
   # Durable record of this home's route to its parent, written once here next

@@ -1652,6 +1652,8 @@ else
   BRIEF="$DATA/$ID/brief.md"
 fi
 [ -f "$BRIEF" ] || { echo "error: no brief at $BRIEF" >&2; exit 1; }
+# shellcheck source=bin/fm-brief-provenance-lib.sh
+. "$SCRIPT_DIR/fm-brief-provenance-lib.sh"
 BRIEF_STATUS_WRITER_PROTOCOL=$(awk -v current="$FM_STATUS_WRITER_PROTOCOL_CURRENT" '
   /^Status writer protocol:/ {
     count++
@@ -1665,6 +1667,13 @@ BRIEF_STATUS_WRITER_PROTOCOL=$(awk -v current="$FM_STATUS_WRITER_PROTOCOL_CURREN
   echo "error: $BRIEF declares an unsupported or ambiguous status-writer protocol" >&2
   exit 1
 }
+if [ "$BRIEF_STATUS_WRITER_PROTOCOL" = "$FM_STATUS_WRITER_PROTOCOL_CURRENT" ]; then
+  BRIEF_PROVENANCE="${BRIEF%.md}.provenance"
+  if ! fm_brief_provenance_verify "$BRIEF" "$BRIEF_PROVENANCE" "$FM_STATUS_WRITER_PROTOCOL_CURRENT"; then
+    echo "error: $BRIEF has missing, contradictory, or unverifiable status-writer provenance" >&2
+    exit 1
+  fi
+fi
 if [ "$RELAUNCH" -eq 1 ]; then
   case "$RELAUNCH_STATUS_WRITER_PROTOCOL" in
     "$FM_STATUS_WRITER_PROTOCOL_CURRENT")

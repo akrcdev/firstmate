@@ -43,6 +43,8 @@ MAX_MANIFEST_BYTES=1048576
 . "$SCRIPT_DIR/fm-remote-readiness-lib.sh"
 # shellcheck source=bin/fm-project-origin-lib.sh
 . "$SCRIPT_DIR/fm-project-origin-lib.sh"
+# shellcheck source=bin/fm-brief-provenance-lib.sh
+. "$SCRIPT_DIR/fm-brief-provenance-lib.sh"
 
 die() { printf 'error: %s\n' "$1" >&2; exit 1; }
 usage() { sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
@@ -135,8 +137,22 @@ if [ ! -f "$BRIEF" ]; then
   BRIEF_CREATED=1
 fi
 if grep -F '{TASK}' "$BRIEF" >/dev/null 2>&1; then
-  [ "$BRIEF_CREATED" -eq 0 ] || rm -f -- "$BRIEF"
+  [ "$BRIEF_CREATED" -eq 0 ] || rm -f -- "$BRIEF" "${BRIEF%.md}.provenance"
   die "secondmate charter still contains {TASK}: $BRIEF"
+fi
+BRIEF_STATUS_WRITER_PROTOCOL=$(awk -v current="$FM_STATUS_WRITER_PROTOCOL_CURRENT" '
+  /^Status writer protocol:/ {
+    count++
+    if ($0 != "Status writer protocol: " current) invalid=1
+  }
+  END {
+    if (count > 1 || invalid) exit 1
+    if (count == 1) print current
+  }
+' "$BRIEF") || die "$BRIEF declares an unsupported or ambiguous status-writer protocol"
+if [ "$BRIEF_STATUS_WRITER_PROTOCOL" = "$FM_STATUS_WRITER_PROTOCOL_CURRENT" ]; then
+  fm_brief_provenance_verify "$BRIEF" "${BRIEF%.md}.provenance" "$FM_STATUS_WRITER_PROTOCOL_CURRENT" \
+    || die "$BRIEF has missing, contradictory, or unverifiable status-writer provenance"
 fi
 SUMMARY=$(registry_summary_for_brief "$BRIEF")
 SCOPE=$(registry_scope_for_brief "$BRIEF")
@@ -156,6 +172,10 @@ while IFS= read -r line || [ -n "$line" ]; do
   line=${line//"$PARENT_STATUS"/"$REMOTE_STATUS"}
   printf '%s\n' "${line//"$PARENT_STATUS_APPEND"/"$REMOTE_STATUS_APPEND"}"
 done < "$BRIEF" > "$TMP/charter.remote"
+if [ "$BRIEF_STATUS_WRITER_PROTOCOL" = "$FM_STATUS_WRITER_PROTOCOL_CURRENT" ]; then
+  fm_brief_provenance_create "$TMP/charter.remote" "$TMP/charter.provenance" "$FM_STATUS_WRITER_PROTOCOL_CURRENT" \
+    || die "could not publish remote charter provenance"
+fi
 
 PROJECTS_CSV=
 : > "$TMP/project.records"
@@ -196,6 +216,8 @@ done
   printf 'schema=fm-remote-home-provision.v1\n'
   printf 'id_b64=%s\n' "$(printf '%s' "$ID" | encode)"
   printf 'charter_b64=%s\n' "$(encode < "$TMP/charter.remote")"
+  [ ! -f "$TMP/charter.provenance" ] \
+    || printf 'charter_provenance_b64=%s\n' "$(encode < "$TMP/charter.provenance")"
   # The SSH alias reaching this host from the parent's own config, carried
   # only so the remote-provisioned home can record durably that its parent
   # lives on another machine (bin/fm-teardown.sh's cleanup gate). It is
@@ -223,7 +245,7 @@ fi
 
 restore_registry_and_brief() {
   if [ "$REG_EXISTED" -eq 1 ]; then cp "$TMP/registry.before" "$REG"; else rm -f -- "$REG"; fi
-  [ "$BRIEF_CREATED" -eq 0 ] || rm -f -- "$BRIEF"
+  [ "$BRIEF_CREATED" -eq 0 ] || rm -f -- "$BRIEF" "${BRIEF%.md}.provenance"
 }
 
 # Preflight and, where it can, repair the remote runtime before anything is

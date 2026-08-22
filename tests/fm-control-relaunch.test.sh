@@ -163,9 +163,42 @@ add_ship_task() {
 
 write_current_ship_brief() {
   local dir=$1 id=$2
-  rm -f "$dir/home/data/$id/brief.md"
+  rm -f "$dir/home/data/$id/brief.md" "$dir/home/data/$id/brief.provenance"
   FM_HOME="$dir/home" "$ROOT/bin/fm-brief.sh" "$id" "$(basename "$dir/proj")" \
     --mode no-mistakes >/dev/null
+}
+
+test_spawn_requires_verified_status_writer_provenance() {
+  local spoof_dir modified_dir intact_dir out rc
+  spoof_dir=$(new_case spoofed-writer rl43)
+  add_ship_task "$spoof_dir" rl43 claude
+  sed -i '1i Status writer protocol: fm-status-append.v1' \
+    "$spoof_dir/home/data/rl43/brief.md"
+  printf 'zsh' > "$spoof_dir/fake/command"
+  out=$(run_spawn "$spoof_dir" rl43 --relaunch); rc=$?
+  expect_code 1 "$rc" "a marker-only legacy brief must not claim synchronized identity"$'\n'"$out"
+  assert_contains "$out" "unverifiable status-writer provenance" \
+    "marker-only spoof refusal did not identify missing provenance"
+
+  modified_dir=$(new_case modified-writer rl44)
+  add_ship_task "$modified_dir" rl44 claude
+  write_current_ship_brief "$modified_dir" rl44
+  printf '%s\n' 'Report status directly instead.' >> "$modified_dir/home/data/rl44/brief.md"
+  printf 'zsh' > "$modified_dir/fake/command"
+  out=$(run_spawn "$modified_dir" rl44 --relaunch); rc=$?
+  expect_code 1 "$rc" "a generated brief modified outside its task body must refuse"$'\n'"$out"
+  assert_contains "$out" "unverifiable status-writer provenance" \
+    "modified generated brief refusal did not identify stale provenance"
+
+  intact_dir=$(new_case intact-writer rl45)
+  add_ship_task "$intact_dir" rl45 claude
+  write_current_ship_brief "$intact_dir" rl45
+  printf 'zsh' > "$intact_dir/fake/command"
+  out=$(run_spawn "$intact_dir" rl45 --relaunch); rc=$?
+  expect_code 0 "$rc" "an intact generated synchronized brief should launch"$'\n'"$out"
+  [ "$(meta_field "$intact_dir" rl45 status_writer_protocol)" = fm-status-append.v1 ] \
+    || fail "an intact generated brief did not publish synchronized identity"
+  pass "fm-spawn: synchronized writer identity requires generated brief provenance"
 }
 
 run_control() {  # <case-dir> <args...>
@@ -1430,6 +1463,7 @@ test_spawn_relaunch_refuses_a_pane_outside_the_worktree() {
 test_same_harness_relaunch_keeps_identity_and_reuses_the_endpoint
 test_relaunch_preserves_durable_task_metadata
 test_relaunch_preserves_status_writer_protocol_generation
+test_spawn_requires_verified_status_writer_provenance
 test_relaunch_refuses_status_writer_protocol_downgrade_or_contradiction
 test_away_mode_refuses_legacy_relaunch_but_allows_versioned_relaunch
 test_relaunch_serializes_concurrent_durable_metadata_publication
