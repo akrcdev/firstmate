@@ -143,9 +143,11 @@ await waitFor(
   () => {
     if (!existsSync(`${process.env.FM_HOME}/state/.watch.lock/pid`)) return false;
     const pid = readFileSync(`${process.env.FM_HOME}/state/.watch.lock/pid`, "utf8").trim();
-    return /^[0-9]+$/.test(pid) && pidAlive(pid);
+    return /^[0-9]+$/.test(pid)
+      && pidAlive(pid)
+      && existsSync(`${process.env.FM_HOME}/state/.last-watcher-beat`);
   },
-  "initial watcher",
+  "healthy initial watcher",
 );
 
 await initial.handlers.get("session_shutdown")?.({ type: "session_shutdown", reason: "new" }, {});
@@ -328,7 +330,7 @@ EOF
 # real crew event instead of sitting in a pre-loop wait that refreshes the
 # liveness beacon and then exits with a synthetic rearm-resurface.
 test_handling_successor_does_not_go_blind() {
-  local dir home state fakebin child event_start now out
+  local dir home state fakebin child event_start now out queue_row
   dir=$(make_case recovery-gap-successor)
   home="$dir/home"
   state="$dir/state"
@@ -373,8 +375,9 @@ test_handling_successor_does_not_go_blind() {
   ! grep -F 'check: rearm-resurface' "$out" >/dev/null \
     || { kill -TERM "$child" 2>/dev/null || true; fail "handling successor emitted synthetic recovery instead of supervising: $(cat "$out")"; }
   if [ "${FM_TEST_EVIDENCE:-0}" = 1 ]; then
+    queue_row=$(grep "$(printf '\tsignal\tcrew.status\t')" "$state/.wake-queue" | tail -1)
     printf 'T2_WATCH_OUTPUT=%s\n' "$(tr '\n' ' ' < "$out")"
-    printf 'T2_QUEUE_ROW=%s\n' "$(grep "$(printf '\tsignal\tcrew.status\t')" "$state/.wake-queue" | tail -1)"
+    printf 'T2_QUEUE_ROW=%s\n' "$queue_row"
   fi
   kill -TERM "$child" 2>/dev/null || true
   wait "$child" 2>/dev/null || true
