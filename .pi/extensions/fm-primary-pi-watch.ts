@@ -224,12 +224,14 @@ function generationIsLive(generation: SessionGeneration): boolean {
   return activeGeneration === generation && !generation.stopping;
 }
 
-function stopGeneration(generation: SessionGeneration): void {
+function stopGeneration(generation: SessionGeneration): ChildProcess | null {
   generation.stopping = true;
   if (generation.retryTimer) clearTimeout(generation.retryTimer);
   generation.retryTimer = null;
-  if (generation.child) generation.child.kill("SIGTERM");
+  const child = generation.child;
+  if (child) child.kill("SIGTERM");
   generation.child = null;
+  return child;
 }
 
 const cleanupOnProcessExit = () => {
@@ -563,8 +565,18 @@ export default function (pi: ExtensionAPI) {
     activateGeneration(generation);
     markLoaded();
   });
-  pi.on?.("session_shutdown", () => {
-    stopGeneration(generation);
+  pi.on?.("session_shutdown", async () => {
+    const child = stopGeneration(generation);
+    const closed = child ? armClose.get(child) : undefined;
+    if (!closed) return;
+    await new Promise<void>((resolveRetired) => {
+      const timer = setTimeout(resolveRetired, armReadyTimeoutMs);
+      timer.unref();
+      void closed.then(() => {
+        clearTimeout(timer);
+        resolveRetired();
+      });
+    });
   });
 
   pi.registerCommand?.("fm-watch-arm-pi", {
