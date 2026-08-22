@@ -153,6 +153,41 @@ EOF
   pass "versioned metadata prevents quoted legacy prose from blocking activation"
 }
 
+test_afk_start_rejects_future_writer_without_retirement() {
+  local dir home state out status control_log fake_control metadata_before
+  dir=$(make_supercase afk-start-future-status-writer)
+  home="$dir/home"
+  state="$home/state"
+  control_log="$dir/control.log"
+  fake_control="$dir/fm-control"
+  metadata_before="$dir/future-task.meta.before"
+  mkdir -p "$home/data/future-task" "$state"
+  printf '%s\n' 'window=synthetic:future-task' 'backend=tmux' 'kind=ship' \
+    'spawn_gen=future.1' 'status_writer_protocol=fm-status-append.v2' \
+    > "$state/future-task.meta"
+  cp "$state/future-task.meta" "$metadata_before"
+  cat > "$fake_control" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> '$control_log'
+exit 1
+EOF
+  chmod +x "$fake_control"
+
+  out=$(FM_HOME="$home" FM_STATE_OVERRIDE="$state" FM_SUPERVISOR_BACKEND=unsupported \
+    FM_AFK_CONTROL_OVERRIDE="$fake_control" "$AFK_START" 2>&1)
+  status=$?
+
+  [ "$status" -ne 0 ] || fail "future status-writer protocol unexpectedly activated away mode"
+  [ ! -e "$control_log" ] || fail "future status-writer protocol was sent to lifecycle retirement"
+  cmp -s "$metadata_before" "$state/future-task.meta" \
+    || fail "future status-writer metadata was mutated during compatibility preflight"
+  assert_contains "$out" "declares unsupported status-writer protocol: fm-status-append.v2" \
+    "future protocol rejection did not identify the unsupported version"
+  assert_not_contains "$out" "starting supervise daemon" \
+    "future protocol rejection continued into daemon activation"
+  pass "future status-writer protocols fail closed without endpoint retirement"
+}
+
 test_daemon_state_root_uses_fm_home() {
   local dir home override out
   dir=$(make_supercase daemon-fm-home)
@@ -2204,6 +2239,7 @@ test_afk_start_ignores_stale_pidfile_without_lock
 test_afk_start_reclaims_stale_daemon_lock_reused_pid
 test_afk_start_retires_metadata_identified_legacy_writer
 test_afk_start_trusts_versioned_writer_despite_quoted_legacy_prose
+test_afk_start_rejects_future_writer_without_retirement
 test_daemon_state_root_uses_fm_home
 test_classify_routine_signal_self
 test_classify_terminal_signal_escalates

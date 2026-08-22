@@ -153,6 +153,11 @@ fm_afk_status_writer_preflight() {
     protocol=$(fm_meta_get "$meta" status_writer_protocol)
     case "$protocol" in
       "$FM_STATUS_WRITER_PROTOCOL_CURRENT"|legacy-direct.retired) continue ;;
+      '') ;;
+      *)
+        echo "afk: refusing activation because task $id declares unsupported status-writer protocol: $protocol" >&2
+        return 1
+        ;;
     esac
     if out=$(FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$FM_AFK_STATE" \
       FM_DATA_OVERRIDE="$FM_AFK_DATA" \
