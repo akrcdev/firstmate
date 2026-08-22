@@ -714,6 +714,49 @@ test_scout_and_secondmate_scaffold() {
   pass "fm-brief: scout and secondmate code paths still scaffold well-formed briefs"
 }
 
+test_provenance_publication_resists_predictable_temp_symlinks() {
+  local dir brief provenance victim_contract victim_provenance unsafe victim_unsafe
+  dir="$TMP_ROOT/provenance-symlinks"
+  mkdir -p "$dir/tmp"
+  FM_HOME="$dir" "$ROOT/bin/fm-brief.sh" safe alpha --mode no-mistakes >/dev/null 2>&1 \
+    || fail "brief scaffold failed before provenance symlink checks"
+  brief="$dir/data/safe/brief.md"
+  provenance="$dir/result.provenance"
+  victim_contract="$dir/contract-victim"
+  victim_provenance="$dir/provenance-victim"
+  victim_unsafe="$dir/unsafe-victim"
+  unsafe="$dir/unsafe.provenance"
+  printf 'contract-safe\n' > "$victim_contract"
+  printf 'provenance-safe\n' > "$victim_provenance"
+  printf 'target-safe\n' > "$victim_unsafe"
+  (
+    TMPDIR="$dir/tmp"
+    export TMPDIR
+    # shellcheck source=bin/fm-brief-provenance-lib.sh
+    . "$ROOT/bin/fm-brief-provenance-lib.sh"
+    ln -s "$victim_contract" "$TMPDIR/fm-brief-contract.$$"
+    ln -s "$victim_provenance" "$provenance.tmp.$$"
+    fm_brief_provenance_create "$brief" "$provenance" fm-status-append.v1
+  ) || fail "safe provenance publication failed with predictable symlinks present"
+  [ "$(cat "$victim_contract")" = contract-safe ] \
+    || fail "contract normalization followed a predictable temp symlink"
+  [ "$(cat "$victim_provenance")" = provenance-safe ] \
+    || fail "provenance publication followed a predictable temp symlink"
+  [ -f "$provenance" ] && [ ! -L "$provenance" ] \
+    || fail "provenance publication did not produce a regular file"
+  ln -s "$victim_unsafe" "$unsafe"
+  if (
+    # shellcheck source=bin/fm-brief-provenance-lib.sh
+    . "$ROOT/bin/fm-brief-provenance-lib.sh"
+    fm_brief_provenance_create "$brief" "$unsafe" fm-status-append.v1
+  ); then
+    fail "provenance publication accepted a symlink target"
+  fi
+  [ "$(cat "$victim_unsafe")" = target-safe ] \
+    || fail "provenance publication wrote through a symlink target"
+  pass "brief provenance publication resists predictable and target symlinks"
+}
+
 test_script_parses
 test_no_heredoc_in_command_substitution
 test_help_includes_entire_header
@@ -734,3 +777,4 @@ test_secondmate_directory_paths_are_absolute_and_output_is_stable
 test_pause_verb_override_renders_all_brief_scaffolds
 test_scout_and_secondmate_load_decision_hold_policy
 test_scout_and_secondmate_scaffold
+test_provenance_publication_resists_predictable_temp_symlinks

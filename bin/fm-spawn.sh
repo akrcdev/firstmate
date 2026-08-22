@@ -149,7 +149,7 @@
 #   multi-task shell loop (the tool shell is zsh, which does not word-split unquoted
 #   $vars and silently breaks ad-hoc `for ... in $pairs` loops).
 #   Launch templates live in launch_template() below; placeholders replaced before launch:
-#     __BRIEF__    absolute path to data/<task-id>/brief.md
+#     __BRIEF__    absolute path to the verified state/<task-id>.brief.snapshot
 #     __PIBIN__    quoted concrete Pi-family executable path resolved from PATH
 #     __PITUIMODE__ optional --tui-mode regular when that executable advertises it
 #     __TURNEND__  absolute path to state/<task-id>.turn-ended (for harnesses whose
@@ -676,6 +676,8 @@ CONFIG_INHERIT_LOCK=
 CONFIG_INHERIT_LOCK_HELD=0
 SPAWN_AFK_WRITER_LOCK=
 SPAWN_AFK_WRITER_LOCK_HELD=0
+SPAWN_BRIEF_SNAPSHOT=
+SPAWN_BRIEF_SNAPSHOT_CLEANUP=0
 
 parse_orca_worktree_result() {
   local raw=$1 rest
@@ -785,6 +787,10 @@ spawn_abort_cleanup() {
   if [ "$SPAWN_AFK_WRITER_LOCK_HELD" = 1 ]; then
     SPAWN_AFK_WRITER_LOCK_HELD=0
     fm_lock_release "$SPAWN_AFK_WRITER_LOCK" || true
+  fi
+  if [ "$SPAWN_BRIEF_SNAPSHOT_CLEANUP" = 1 ]; then
+    SPAWN_BRIEF_SNAPSHOT_CLEANUP=0
+    rm -f -- "$SPAWN_BRIEF_SNAPSHOT" 2>/dev/null || true
   fi
   [ -z "$SPAWN_META_TMP" ] || rm -f "$SPAWN_META_TMP" 2>/dev/null || true
   if [ "$CONFIG_INHERIT_LOCK_HELD" = 1 ]; then
@@ -1651,9 +1657,18 @@ else
   WT=""
   BRIEF="$DATA/$ID/brief.md"
 fi
-[ -f "$BRIEF" ] || { echo "error: no brief at $BRIEF" >&2; exit 1; }
+[ -f "$BRIEF" ] && [ ! -L "$BRIEF" ] || { echo "error: no safe brief at $BRIEF" >&2; exit 1; }
 # shellcheck source=bin/fm-brief-provenance-lib.sh
 . "$SCRIPT_DIR/fm-brief-provenance-lib.sh"
+BRIEF_SOURCE=$BRIEF
+BRIEF_SOURCE_PROVENANCE="${BRIEF_SOURCE%.md}.provenance"
+SPAWN_BRIEF_SNAPSHOT="$STATE/$ID.brief.snapshot"
+if ! fm_brief_snapshot_create "$BRIEF_SOURCE" "$SPAWN_BRIEF_SNAPSHOT"; then
+  echo "error: could not publish a safe brief snapshot for $ID" >&2
+  exit 1
+fi
+SPAWN_BRIEF_SNAPSHOT_CLEANUP=1
+BRIEF=$SPAWN_BRIEF_SNAPSHOT
 BRIEF_STATUS_WRITER_PROTOCOL=$(awk -v current="$FM_STATUS_WRITER_PROTOCOL_CURRENT" '
   /^Status writer protocol:/ {
     count++
@@ -1668,7 +1683,7 @@ BRIEF_STATUS_WRITER_PROTOCOL=$(awk -v current="$FM_STATUS_WRITER_PROTOCOL_CURREN
   exit 1
 }
 if [ "$BRIEF_STATUS_WRITER_PROTOCOL" = "$FM_STATUS_WRITER_PROTOCOL_CURRENT" ]; then
-  BRIEF_PROVENANCE="${BRIEF%.md}.provenance"
+  BRIEF_PROVENANCE=$BRIEF_SOURCE_PROVENANCE
   if ! fm_brief_provenance_verify "$BRIEF" "$BRIEF_PROVENANCE" "$FM_STATUS_WRITER_PROTOCOL_CURRENT"; then
     echo "error: $BRIEF has missing, contradictory, or unverifiable status-writer provenance" >&2
     exit 1
@@ -2866,6 +2881,7 @@ if [ -n "$SPAWN_TRACEPARENT" ]; then
   fi
 fi
 sleep 0.3
+SPAWN_BRIEF_SNAPSHOT_CLEANUP=0
 spawn_send_literal "$T" "$LAUNCH"
 sleep 0.3
 if [ "${HERDR_PROJECTED:-0}" -eq 1 ]; then

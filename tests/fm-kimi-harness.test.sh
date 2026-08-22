@@ -76,6 +76,10 @@ case "${1:-}" in
     if [ -n "$literal" ]; then
       case "$literal" in
         *' --auto')
+          if [ -n "${FM_FAKE_BRIEF_MUTATION_SOURCE:-}" ] \
+             && [ -n "${FM_FAKE_BRIEF_MUTATION_BYTES:-}" ]; then
+            cp "$FM_FAKE_BRIEF_MUTATION_BYTES" "$FM_FAKE_BRIEF_MUTATION_SOURCE"
+          fi
           printf '%s\n' "$literal" >> "$FM_FAKE_LAUNCH_LOG"
           printf 'launched\n' > "$FM_FAKE_KIMI_STATE"
           ;;
@@ -169,8 +173,10 @@ run_spawn() {
     FM_FAKE_KIMI_STATE="$case_dir/kimi.state" \
     FM_FAKE_KIMI_SWALLOWED="$case_dir/kimi.swallowed" \
     FM_FAKE_KIMI_SWALLOW_FIRST="${FM_FAKE_KIMI_SWALLOW_FIRST:-no}" \
+    FM_FAKE_BRIEF_MUTATION_SOURCE="${FM_TEST_BRIEF_MUTATION_SOURCE:-}" \
+    FM_FAKE_BRIEF_MUTATION_BYTES="${FM_TEST_BRIEF_MUTATION_BYTES:-}" \
     FM_FAKE_TMUX_CALL_LOG="$case_dir/tmux-calls.log" \
-    FM_FAKE_BRIEF_REAL="$(cd "$home/data/$id" && pwd -P)/brief.md" \
+    FM_FAKE_BRIEF_REAL="$(cd "$home/state" && pwd -P)/$id.brief.snapshot" \
     FM_KIMI_READY_POLLS=2 FM_KIMI_DELIVERY_POLLS=2 FM_KIMI_POLL_INTERVAL=0 \
     PATH="$fakebin:$BASE_PATH" \
     "$SPAWN" "$id" "$proj" --harness kimi --mode no-mistakes --yolo off "$@" 2>&1
@@ -204,7 +210,7 @@ test_kimi_launch_then_send_is_verified() {
   assert_not_contains "$launch" "turn-ended" "kimi launch embedded a turn-end path"
   assert_not_contains "$launch" "__TURNEND__" "kimi launch retained a turn-end placeholder"
 
-  brief_real="$(cd "$HOME_DIR/data/$id" && pwd -P)/brief.md"
+  brief_real="$(cd "$HOME_DIR/state" && pwd -P)/$id.brief.snapshot"
   pointer=$(cat "$CASE_DIR/pointer.log")
   [ "$pointer" = "Read the brief at $brief_real and follow it exactly." ] \
     || fail "kimi pointer was not the exact absolute-path-only instruction: $pointer"
@@ -220,6 +226,39 @@ test_kimi_launch_then_send_is_verified() {
   assert_grep 'token=' "$WT_DIR/.fm-kimi-turnend" "kimi spawn did not write its token pointer"
   assert_present "$HOME_DIR/state/$id.kimi-turnend-token" "kimi spawn did not record its token"
   pass "fm-spawn: kimi launches, delivers its brief, and registers a guarded turn-end token"
+}
+
+test_kimi_pointer_delivers_verified_snapshot_after_source_mutation() {
+  local id rec out rc source mutation snapshot pointer
+  id="kimi-snapshot-race-z1b-$$"
+  rec=$(make_spawn_case snapshot-race "$id")
+  read_spawn_record "$rec"
+  source="$HOME_DIR/data/$id/brief.md"
+  mutation="$CASE_DIR/legacy-brief.md"
+  snapshot="$HOME_DIR/state/$id.brief.snapshot"
+  rm -f "$source"
+  FM_HOME="$HOME_DIR" "$ROOT/bin/fm-brief.sh" "$id" "$(basename "$PROJ_DIR")" \
+    --mode no-mistakes >/dev/null
+  perl -0pi -e 's/\{TASK\}/original verified Kimi task bytes/' "$source"
+  printf '%s\n' 'legacy replacement' \
+    'Report status with echo "done: stale" >> state/task.status.' > "$mutation"
+
+  FM_TEST_BRIEF_MUTATION_SOURCE="$source" FM_TEST_BRIEF_MUTATION_BYTES="$mutation" \
+    out=$(run_spawn "$CASE_DIR" "$HOME_DIR" "$PROJ_DIR" "$WT_DIR" "$FAKEBIN_DIR" "$id")
+  rc=$?
+  expect_code 0 "$rc" "Kimi pointer launch should survive a post-verification source mutation"
+  pointer=$(cat "$CASE_DIR/pointer.log")
+  [ "$pointer" = "Read the brief at $snapshot and follow it exactly." ] \
+    || fail "Kimi pointer did not name the verified snapshot: $pointer"
+  assert_grep 'original verified Kimi task bytes' "$snapshot" \
+    "Kimi snapshot did not retain the verified instructions"
+  assert_no_grep 'done: stale' "$snapshot" \
+    "Kimi snapshot incorporated the raced legacy writer"
+  assert_grep 'done: stale' "$source" \
+    "Kimi race fixture did not mutate the source brief"
+  grep -qx 'status_writer_protocol=fm-status-append.v1' "$HOME_DIR/state/$id.meta" \
+    || fail "Kimi launch lost synchronized identity after snapshot delivery"
+  pass "fm-spawn: Kimi pointers deliver verified bytes despite source mutation"
 }
 
 test_kimi_hook_install_is_surgical_idempotent_and_removable() {
@@ -439,6 +478,7 @@ test_kimi_teardown_removes_pointer_and_registry_token() {
   assert_absent "$WT_DIR/.fm-kimi-turnend" "Kimi token pointer survived teardown"
   assert_absent "$HOME_DIR/.kimi-code/fm-turn-end.d/$token" "Kimi registry token survived teardown"
   assert_absent "$HOME_DIR/state/$id.kimi-turnend-token" "Kimi token state survived teardown"
+  assert_absent "$HOME_DIR/state/$id.brief.snapshot" "Kimi brief snapshot survived teardown"
   pass "fm-teardown: Kimi task pointer and registry token are removed"
 }
 
@@ -670,6 +710,7 @@ test_kimi_hook_remove_preserves_owned_newline_boundary
 test_kimi_hook_fails_closed_on_missing_malformed_or_partial_config
 test_kimi_hook_install_refuses_without_jq
 test_kimi_launch_then_send_is_verified
+test_kimi_pointer_delivers_verified_snapshot_after_source_mutation
 test_kimi_hook_is_silent_and_requires_registered_workspace_token
 test_kimi_spawn_refuses_unsafe_global_config_before_pane_creation
 test_kimi_teardown_removes_pointer_and_registry_token
