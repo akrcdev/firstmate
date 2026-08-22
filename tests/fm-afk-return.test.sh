@@ -53,6 +53,10 @@ if [ -s "$file" ]; then
   else
     cat "$file"
   fi
+  if [ -s "$FM_HOME/state/.fake-drain-once" ]; then
+    cat "$FM_HOME/state/.fake-drain-once"
+    : > "$FM_HOME/state/.fake-drain-once"
+  fi
   if [ -s "$FM_HOME/state/.fake-drain-resolve-after" ]; then
     status=$(sed -n '1p' "$FM_HOME/state/.fake-drain-resolve-after")
     line=$(sed -n '2p' "$FM_HOME/state/.fake-drain-resolve-after")
@@ -116,8 +120,8 @@ test_return_gate_orders_catchup_before_bearings() {
   gate="$dir/home/state/.afk-return-catchup"
   [ -s "$gate" ] || fail "return begin did not persist its fail-closed catch-up gate"
   assert_contains "$out" 'firstmate-actionable blocker: repair-task [key=synthetic-dependency]' "return output did not assign blocker remediation to Firstmate"
-  grep -F $'evidence\twake\t1784074271' "$gate" >/dev/null || fail "drained wake evidence was not retained in the durable gate"
-  grep -F $'evidence\twake\twake annotation: latest wake-EVENT observed at drain, not current state: repair-task.status: blocked' "$gate" >/dev/null \
+  grep -F $'evidence\twake-nondecision\t1784074271' "$gate" >/dev/null || fail "drained wake evidence was not retained in the durable gate"
+  grep -F $'evidence\twake-nondecision\twake annotation: latest wake-EVENT observed at drain, not current state: repair-task.status: blocked' "$gate" >/dev/null \
     && fail "decision-bearing drain annotation was persisted as generic wake evidence"
   grep -F $'evidence\twedge\tfm away-mode inject WEDGED: 4555s undelivered' "$gate" >/dev/null || fail "wedge evidence was not retained in the durable gate"
   grep -F $'evidence\tdecision\trepair-task.status: blocked [key=synthetic-dependency]: firstmate can refresh the synthetic token' "$gate" >/dev/null \
@@ -143,7 +147,7 @@ test_return_gate_orders_catchup_before_bearings() {
   set -e
   [ "$rc" -eq 3 ] || fail "repeated begin should preserve the unresolved gate"
   [ "$(wc -l < "$dir/home/stop.log" | tr -d ' ')" -eq 1 ] || fail "repeated begin stopped an already-stopped daemon twice"
-  wake_count=$(grep -c $'^evidence\twake\t1784074271' "$gate" || true)
+  wake_count=$(grep -c $'^evidence\twake-nondecision\t1784074271' "$gate" || true)
   [ "$wake_count" -eq 1 ] || fail "repeated begin duplicated retained wake evidence ($wake_count copies)"
   [ "$(grep -c $'^evidence\twedge\t' "$gate" || true)" -eq 1 ] || fail "repeated begin duplicated retained wedge evidence"
   [ "$(grep -c $'^evidence\tdecision\t' "$gate" || true)" -eq 1 ] || fail "repeated begin duplicated rebuilt decision evidence"
@@ -287,6 +291,45 @@ test_return_rebuilds_decision_bearing_wake_evidence() {
   pass "away return rebuilds initial and retried decision evidence authoritatively"
 }
 
+test_return_retry_preserves_nondecision_wake_evidence() {
+  local dir out rc gate status
+  dir="$TMP_ROOT/nondecision-wake-retry"
+  install_runner "$dir"
+  seed_live_blocker "$dir" tmux return-gate
+  status="$dir/home/state/progress.status"
+  {
+    printf 'note: release notes are ready\n'
+    printf 'done: portable verification passed\n'
+    printf 'failed: optional mirror upload needs review\n'
+  } > "$status"
+  printf '1784074273\t6\tsignal\tprogress.status\tsignal: progress.status\n' \
+    > "$dir/home/state/.fake-drain"
+  {
+    printf 'wake annotation: latest wake-EVENT observed at drain, not current state: progress.status: note: release notes are ready\n'
+    printf 'wake annotation: latest wake-EVENT observed at drain, not current state: progress.status: done: portable verification passed\n'
+    printf 'wake annotation: latest wake-EVENT observed at drain, not current state: progress.status: failed: optional mirror upload needs review\n'
+  } > "$dir/home/state/.fake-drain-once"
+
+  set +e
+  out=$(run_return "$dir" begin)
+  rc=$?
+  set -e
+  [ "$rc" -eq 3 ] || fail "non-decision retry fixture did not open the return gate: $out"
+  gate="$dir/home/state/.afk-return-catchup"
+  [ -s "$gate" ] || fail "non-decision retry fixture did not persist catch-up evidence"
+
+  printf 'resolved [key=return-gate]: blocker repaired\n' >> "$dir/home/state/repair-task.status"
+  out=$(run_return "$dir" check) || fail "non-decision evidence retry did not clear: $out"
+  assert_contains "$out" 'note: release notes are ready' \
+    "return retry lost the already-presented note evidence"
+  assert_contains "$out" 'done: portable verification passed' \
+    "return retry lost the already-presented done evidence"
+  assert_contains "$out" 'failed: optional mirror upload needs review' \
+    "return retry lost the already-presented failed evidence"
+  [ ! -e "$gate" ] || fail "non-decision evidence retry left its return gate"
+  pass "away return retries preserve already-filtered non-decision wake evidence"
+}
+
 test_evidence_publication_failure_preserves_wake_for_redrain() {
   local dir out rc gate
   dir="$TMP_ROOT/evidence-publication-failure"
@@ -368,6 +411,7 @@ test_explicit_reclassification_requires_durable_reason
 test_captain_decision_does_not_masquerade_as_firstmate_blocker
 test_return_revalidates_busy_buffer_before_presentation
 test_return_rebuilds_decision_bearing_wake_evidence
+test_return_retry_preserves_nondecision_wake_evidence
 test_evidence_publication_failure_preserves_wake_for_redrain
 test_away_reentry_refuses_pending_return_gate
 test_check_retries_recorded_terminal_teardown

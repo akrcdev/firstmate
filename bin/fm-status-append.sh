@@ -21,10 +21,7 @@ STATE=$(cd "$(dirname "$STATUS_FILE")" 2>/dev/null && pwd -P) || {
   echo "error: status directory does not exist: $(dirname "$STATUS_FILE")" >&2
   exit 1
 }
-[ "$STATUS_FILE" = "$STATE/${STATUS_FILE##*/}" ] || {
-  echo "error: status path must use its canonical state directory" >&2
-  exit 1
-}
+STATUS_FILE="$STATE/${STATUS_FILE##*/}"
 
 FM_STATE_OVERRIDE="$STATE"
 export FM_STATE_OVERRIDE

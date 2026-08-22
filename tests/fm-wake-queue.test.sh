@@ -711,6 +711,33 @@ test_self_announced_append_guards() {
   pass "self-announced appends suppress only their own bytes and fail toward waking"
 }
 
+test_status_append_accepts_symlink_spelled_home() {
+  local dir real_home linked_home status outside
+  dir=$(make_case status-append-symlink-home)
+  real_home="$dir/real-home"
+  linked_home="$dir/linked-home"
+  status="$real_home/state/task.status"
+  outside="$dir/outside.status"
+  mkdir -p "$real_home/state"
+  ln -s "$real_home" "$linked_home"
+
+  "$ROOT/bin/fm-status-append.sh" "$linked_home/state/task.status" \
+    'done: symlink-spelled home reported completion' \
+    || fail "status appender rejected a supported symlink-spelled home"
+  [ "$(cat "$status")" = 'done: symlink-spelled home reported completion' ] \
+    || fail "status appender did not write through the canonical home state directory"
+
+  printf 'outside remains unchanged\n' > "$outside"
+  ln -s "$outside" "$real_home/state/unsafe.status"
+  if "$ROOT/bin/fm-status-append.sh" "$linked_home/state/unsafe.status" \
+    'failed: must not follow status leaf symlink' >/dev/null 2>&1; then
+    fail "status appender accepted an unsafe symlinked status leaf"
+  fi
+  [ "$(cat "$outside")" = 'outside remains unchanged' ] \
+    || fail "status appender modified an unsafe symlink target"
+  pass "status appender canonicalizes home spelling without weakening leaf safety"
+}
+
 # A trap that fires inside a lock's critical section abandons the holding
 # frame, and the exit path then re-acquires the same lock (a TERM inside a
 # recovery-marker section is the reproduced case: the watcher's reap wedged
@@ -794,6 +821,7 @@ test_historical_annotation_skips_announced_status() {
 
 test_self_held_lock_reclaims_instead_of_deadlocking
 test_self_announced_append_guards
+test_status_append_accepts_symlink_spelled_home
 test_historical_annotation_skips_announced_status
 test_concurrent_append_and_drain
 test_signal_catchup_without_running_watcher

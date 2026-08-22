@@ -108,6 +108,7 @@ print_evidence() {  # <file>
   local file=$1 kind text
   while IFS="$(printf '\t')" read -r tag kind text; do
     [ "$tag" = evidence ] || continue
+    [ "$kind" != wake-nondecision ] || kind=wake
     printf 'catch-up %s: %s\n' "$kind" "$text"
   done < "$file"
 }
@@ -168,7 +169,7 @@ return_reconcile() {
     append_evidence lifecycle 'durable wake drain returned an invalid acknowledgement; retry catch-up before ordinary work' "$evidence"
     lifecycle_ok=0
   fi
-  append_evidence wake "$drained" "$evidence"
+  append_evidence wake-nondecision "$drained" "$evidence"
 
   fm_lock_acquire_wait "$status_lock" || {
     rm -f "$evidence" "$blockers" "$drain_err"
