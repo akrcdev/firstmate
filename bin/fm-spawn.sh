@@ -674,6 +674,8 @@ RELAUNCH_REPLACEMENT_STATE=
 RELAUNCH_REPLACEMENT_WT=
 CONFIG_INHERIT_LOCK=
 CONFIG_INHERIT_LOCK_HELD=0
+SPAWN_AFK_WRITER_LOCK=
+SPAWN_AFK_WRITER_LOCK_HELD=0
 
 parse_orca_worktree_result() {
   local raw=$1 rest
@@ -779,6 +781,10 @@ spawn_abort_cleanup() {
   if [ "$SPAWN_CONTROL_LOCK_HELD" = 1 ]; then
     SPAWN_CONTROL_LOCK_HELD=0
     fm_lock_release "$SPAWN_CONTROL_LOCK" || true
+  fi
+  if [ "$SPAWN_AFK_WRITER_LOCK_HELD" = 1 ]; then
+    SPAWN_AFK_WRITER_LOCK_HELD=0
+    fm_lock_release "$SPAWN_AFK_WRITER_LOCK" || true
   fi
   [ -z "$SPAWN_META_TMP" ] || rm -f "$SPAWN_META_TMP" 2>/dev/null || true
   if [ "$CONFIG_INHERIT_LOCK_HELD" = 1 ]; then
@@ -1012,6 +1018,15 @@ if [ "$RELAUNCH" -eq 1 ]; then
   }
   RELAUNCH_PRIOR_HARNESS=$(fm_meta_get "$RELAUNCH_META" harness)
   RELAUNCH_STATUS_WRITER_PROTOCOL=$(fm_meta_get "$RELAUNCH_META" status_writer_protocol)
+  if [ "$RELAUNCH_STATUS_WRITER_PROTOCOL" != "$FM_STATUS_WRITER_PROTOCOL_CURRENT" ]; then
+    SPAWN_AFK_WRITER_LOCK="$STATE/.afk-status-writer.lock"
+    fm_lock_acquire_wait "$SPAWN_AFK_WRITER_LOCK"
+    SPAWN_AFK_WRITER_LOCK_HELD=1
+    if [ -e "$STATE/.afk" ] || [ -L "$STATE/.afk" ]; then
+      echo "error: task $ID uses a pre-version status writer; end away mode or migrate its return channel before relaunch" >&2
+      exit 1
+    fi
+  fi
   KIND=$(fm_meta_get "$RELAUNCH_META" kind)
   [ -n "$KIND" ] || KIND=ship
   MODE=$(fm_meta_get "$RELAUNCH_META" mode)
@@ -2855,6 +2870,11 @@ if [ "$KIND" = secondmate ] && [ "${FM_SKIP_SECONDMATE_INHERIT:-0}" != 1 ]; then
       echo "CONFIG_REREAD: secondmate $ID: cleanup failed; pre-relaunch generations were force-cleared where possible (destination=$PROJ_ABS source=$FM_HOME)" >&2
     fi
   fi
+fi
+
+if [ "$SPAWN_AFK_WRITER_LOCK_HELD" = 1 ]; then
+  SPAWN_AFK_WRITER_LOCK_HELD=0
+  fm_lock_release "$SPAWN_AFK_WRITER_LOCK"
 fi
 
 SPAWN_DELIVERY=

@@ -294,7 +294,7 @@ Harness identity is read from the executable path and `argv[0]` as well as the c
 `tests/fm-session-lock-ancestry.test.sh` pins both platforms' reporting semantics behind a deterministic process table and runs the real Stop auto-arm in version-named, daemon-parented, and combined real process trees.
 `tests/fm-watch-arm.test.sh` runs real watcher and arm cycles against durable on-disk state to verify that a delivered reason survives until post-handling acknowledgement and stops replaying after acknowledgement, while an unrelated queue append cannot make a watcher cycle that delivered nothing look successful.
 The same suite ingests a keyed remote-secondmate parent reply through the real adapter, establishes the incremental OPEN DECISIONS cursor, interrupts supervision, and proves re-arm replays every unacknowledged queue row plus the still-open decision through the ordinary drain path.
-It also proves an empty re-arm does not create a decision-only turn, later durable work still carries the existing open decision through the ordinary drain, interrupted handling remains replayable, handling-window generations remain stable, moved-generation acknowledgement consumes only its bounded rows, and a persistent successor remains live after recovery is acknowledged.
+It also proves a healthy normal Pi extension-owned replacement with an empty queue does not create a decision-only turn, later durable work still carries the existing open decision through the ordinary drain, interrupted handling remains replayable, handling-window generations remain stable, moved-generation acknowledgement consumes only its bounded rows, and a persistent successor remains live after recovery is acknowledged.
 
 The Claude product live path ran with Claude Code 2.1.219 on 2026-07-24:
 
@@ -446,7 +446,7 @@ Observed guarantee: after ordinary `session_shutdown` for `/new`, `/resume`, and
 Stale prior-generation tool callbacks could not mutate the active child, repeated transitions kept exactly one live arm cycle, and terminal `quit` still refused late rearm.
 Plain Pi and pi-signed share the same tracked `.pi/extensions/fm-primary-pi-watch.ts` path, so both inherit the generation owner; other primary harnesses are not applicable because they do not use this Pi extension lifecycle.
 
-The empty-recovery notification boundary, once-per-generation recovery bound, immediate handling-successor poll, and away-mode keyed-decision fold were verified on 2026-08-21 with real watcher processes and isolated homes.
+The healthy normal Pi replacement empty-recovery notification boundary, once-per-generation recovery bound, immediate handling-successor poll, and away-mode keyed-decision fold were verified on 2026-08-21 with real watcher processes and isolated homes.
 The portable Pi path performs an orderly session-generation replacement through the tracked extension, observes no follow-up for an empty durable queue, then delivers one real signal exactly once while the successor remains live.
 The recovery path also forces handling confirmation to fail, observes one durable recovery follow-up across the former repeat window, and proves a handling successor detects a real crew event promptly.
 The away-mode path buffers keyed decisions through the catch-all, resolves one before delivery while current progress is working, injects only the genuinely open key, and prunes the closed key from both current and legacy private buffer forms.
@@ -486,7 +486,8 @@ ok - Pi 0.84.1 headless empty recovery: agent_starts=1 tool_calls=1 rearm_follow
 
 Pi and pi-signed share this tracked extension path.
 OpenCode shares the arm-layer recovery contract but not Pi's `sendUserMessage` transport, and its deterministic close-handler cases remain in `tests/fm-pi-watch-extension.test.sh`.
-Claude, Cursor, Grok, and Codex do not use Pi's follow-up delivery, but their arm or checkpoint paths inherit the same queue-atomic empty-recovery rule from `bin/fm-watch.sh` and `bin/fm-wake-lib.sh`; the relevant auto-arm, park, background, and checkpoint suites remain their verification owners.
+Claude, Cursor, Grok, and Codex do not use Pi's follow-up delivery and do not inherit Pi's quiet empty-recovery retirement policy.
+Their arm or checkpoint paths retain queue-atomic actionable recovery, and abnormal recovery remains presentable; the relevant auto-arm, park, background, and checkpoint suites remain their verification owners.
 The queue decision reads no worker endpoint, so tmux, Herdr, Zellij, Orca, and cmux task backends need no adapter change.
 Away-mode decision revalidation applies to its supported tmux and Herdr supervisor transports before either injection primitive runs; unsupported away-mode supervisor backends remain unchanged.
 

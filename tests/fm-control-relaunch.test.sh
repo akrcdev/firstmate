@@ -28,6 +28,7 @@ set -u
 
 CONTROL="$ROOT/bin/fm-control.sh"
 SPAWN="$ROOT/bin/fm-spawn.sh"
+AFK_START="$ROOT/bin/fm-afk-start.sh"
 PROMOTE="$ROOT/bin/fm-promote.sh"
 X_LINK="$ROOT/bin/fm-x-link.sh"
 # fm_test_tmproot's own cleanup trap fires when its command substitution exits,
@@ -181,6 +182,12 @@ run_spawn() {  # <case-dir> <args...>
     "$SPAWN" "$@" 2>&1
 }
 
+run_afk_start() {  # <case-dir>
+  local dir=$1
+  env PATH="$dir/fakebin:$PATH" FM_HOME="$dir/home" FM_STATE_OVERRIDE="$dir/home/state" \
+    FM_FAKE_DIR="$dir/fake" FM_SUPERVISOR_BACKEND=unsupported "$AFK_START" 2>&1
+}
+
 meta_field() {  # <case-dir> <id> <key>
   grep "^$3=" "$1/home/state/$2.meta" | tail -1 | cut -d= -f2-
 }
@@ -321,6 +328,39 @@ test_relaunch_preserves_status_writer_protocol_generation() {
   [ "$(meta_field "$current_dir" rl37 status_writer_protocol)" = 'fm-status-append.v1' ] \
     || fail "a versioned writer lost its synchronized protocol across relaunch"
   pass "fm-control relaunch: status-writer protocol follows the unchanged worker generation"
+}
+
+test_away_mode_refuses_legacy_relaunch_but_allows_versioned_relaunch() {
+  local dir current_dir out rc
+  dir=$(new_case afk-legacy-writer rl38)
+  add_ship_task "$dir" rl38 claude
+  printf '%s\n' 'Report status with echo "{state}: {one short line}" >> state/rl38.status.' \
+    >> "$dir/home/data/rl38/brief.md"
+  printf 'zsh' > "$dir/fake/command"
+
+  out=$(run_afk_start "$dir"); rc=$?
+  expect_code 1 "$rc" "the unsupported daemon fixture should fail after accepting away activation"$'\n'"$out"
+  [ -f "$dir/home/state/.afk" ] || fail "dead legacy endpoint was not accepted at away activation"
+  : > "$dir/fake/literal"
+  out=$(run_spawn "$dir" rl38 --relaunch); rc=$?
+  expect_code 1 "$rc" "legacy relaunch should refuse while away mode is active"$'\n'"$out"
+  assert_contains "$out" "end away mode or migrate its return channel before relaunch" \
+    "legacy relaunch refusal did not identify the safe recovery"
+  assert_no_grep "encode launch-brief" "$dir/fake/literal" \
+    "legacy relaunch delivered worker input after away activation"
+
+  current_dir=$(new_case afk-current-writer rl39)
+  add_ship_task "$current_dir" rl39 claude
+  printf 'status_writer_protocol=fm-status-append.v1\n' \
+    >> "$current_dir/home/state/rl39.meta"
+  printf 'zsh' > "$current_dir/fake/command"
+  out=$(run_afk_start "$current_dir"); rc=$?
+  expect_code 1 "$rc" "the unsupported daemon fixture should fail after versioned away activation"$'\n'"$out"
+  out=$(run_spawn "$current_dir" rl39 --relaunch); rc=$?
+  expect_code 0 "$rc" "versioned relaunch should remain supported during away mode"$'\n'"$out"
+  assert_grep "encode launch-brief" "$current_dir/fake/literal" \
+    "versioned relaunch did not launch during away mode"
+  pass "fm-spawn relaunch: away mode blocks legacy writers and permits synchronized writers"
 }
 
 test_relaunch_serializes_concurrent_durable_metadata_publication() {
@@ -1341,6 +1381,7 @@ test_spawn_relaunch_refuses_a_pane_outside_the_worktree() {
 test_same_harness_relaunch_keeps_identity_and_reuses_the_endpoint
 test_relaunch_preserves_durable_task_metadata
 test_relaunch_preserves_status_writer_protocol_generation
+test_away_mode_refuses_legacy_relaunch_but_allows_versioned_relaunch
 test_relaunch_serializes_concurrent_durable_metadata_publication
 test_disabled_relaunch_clears_prior_trace_context
 test_relaunch_appends_the_progress_note_to_the_instructions

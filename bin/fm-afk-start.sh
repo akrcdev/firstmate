@@ -113,28 +113,37 @@ daemon_lock_held_by_live_daemon() {
 }
 
 fm_afk_flag_write() {  # <state-dir>
-  local state=$1 lock="$1/.cursor-park-owner.lock" pending attempt=0 status=1
+  local state=$1 lock="$1/.cursor-park-owner.lock" writer_lock="$1/.afk-status-writer.lock"
+  local pending attempt=0 status=1
   mkdir -p "$state" || return 1
   [ ! -d "$state/.afk" ] || return 1
   pending=$(mktemp "$state/.afk.pending.XXXXXX") || return 1
   date '+%s' > "$pending" || { rm -f "$pending"; return 1; }
+  fm_lock_acquire_wait "$writer_lock"
+  if ! fm_afk_status_writer_preflight "$state"; then
+    fm_lock_release "$writer_lock"
+    rm -f "$pending" 2>/dev/null || true
+    return 1
+  fi
   while [ "$attempt" -lt 50 ]; do
     attempt=$((attempt + 1))
     if fm_lock_try_acquire "$lock"; then
       mv "$pending" "$state/.afk" && status=0
       fm_lock_release "$lock"
+      fm_lock_release "$writer_lock"
       rm -f "$pending" 2>/dev/null || true
       return "$status"
     fi
     [ "$attempt" -lt 50 ] && sleep 0.1
   done
+  fm_lock_release "$writer_lock"
   rm -f "$pending" 2>/dev/null || true
   return 1
 }
 
 fm_afk_status_writer_preflight() {
-  local meta id protocol backend target state
-  for meta in "$FM_AFK_STATE"/*.meta; do
+  local state_root=${1:-$FM_AFK_STATE} meta id protocol backend target state
+  for meta in "$state_root"/*.meta; do
     if [ ! -e "$meta" ] && [ ! -L "$meta" ]; then continue; fi
     if [ ! -f "$meta" ] || [ -L "$meta" ]; then
       echo "afk: refusing activation because task metadata is unsafe: $meta" >&2
@@ -188,9 +197,19 @@ fm_afk_start_main() {
   esac
 
   mkdir -p "$FM_AFK_STATE"
-  fm_afk_status_writer_preflight || return 1
   if [ "${FM_AFK_STATE_PREPARED:-0}" = 1 ]; then
-    [ -f "$FM_AFK_STATE/.afk" ] || { echo "afk: launcher-prepared state is missing" >&2; return 1; }
+    local writer_lock="$FM_AFK_STATE/.afk-status-writer.lock"
+    fm_lock_acquire_wait "$writer_lock"
+    if [ ! -f "$FM_AFK_STATE/.afk" ]; then
+      fm_lock_release "$writer_lock"
+      echo "afk: launcher-prepared state is missing" >&2
+      return 1
+    fi
+    if ! fm_afk_status_writer_preflight; then
+      fm_lock_release "$writer_lock"
+      return 1
+    fi
+    fm_lock_release "$writer_lock"
   else
     fm_afk_flag_write "$FM_AFK_STATE" || { echo "afk: failed to write away-mode flag" >&2; return 1; }
   fi
