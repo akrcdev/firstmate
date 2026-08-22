@@ -60,7 +60,7 @@ JS
 # T0: an orderly Pi session replacement must retire only its empty recovery
 # episode, remain live, and deliver the next real event exactly once.
 test_empty_pi_replacement_stays_silent() {
-  local repo home plugin fakebin out status lock_pid messages
+  local repo home plugin fakebin node_out out status lock_pid messages
   repo="$TMP_ROOT/t0-root"
   home="$TMP_ROOT/t0-home"
   fakebin="$TMP_ROOT/t0-fakebin"
@@ -80,11 +80,11 @@ exec "$ROOT/bin/fm-watch-arm.sh" "\$@"
 SH
   chmod +x "$repo/bin/fm-watch-arm.sh"
   : > "$home/state/crew.meta"
-  out=$(
-    PLUGIN="$plugin" FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" \
-      FM_STATE_OVERRIDE="$home/state" PATH="$fakebin:$PATH" \
-      FM_POLL=1 FM_SIGNAL_GRACE=0 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 \
-      node --input-type=module 2>&1 <<'EOF'
+  node_out="$TMP_ROOT/t0-node.out"
+  PLUGIN="$plugin" FM_HOME="$home" FM_ROOT_OVERRIDE="$repo" \
+    FM_STATE_OVERRIDE="$home/state" PATH="$fakebin:$PATH" \
+    FM_POLL=1 FM_SIGNAL_GRACE=0 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 \
+    node --input-type=module > "$node_out" 2>&1 <<'EOF'
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
@@ -207,8 +207,8 @@ await replacement.handlers.get("session_shutdown")?.({ type: "session_shutdown",
 console.log(`T0_PROMPTS=${replacement.prompts.length}`);
 console.log(`T0_LOCK_PID=${successorPid}`);
 EOF
-  )
   status=$?
+  out=$(cat "$node_out")
   if [ "${FM_TEST_EVIDENCE:-0}" = 1 ]; then
     printf '%s\n' "$out"
   fi
