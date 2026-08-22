@@ -161,6 +161,13 @@ add_ship_task() {
   TASK_TMPS+=("/tmp/fm-$id")
 }
 
+write_current_ship_brief() {
+  local dir=$1 id=$2
+  rm -f "$dir/home/data/$id/brief.md"
+  FM_HOME="$dir/home" "$ROOT/bin/fm-brief.sh" "$id" "$(basename "$dir/proj")" \
+    --mode no-mistakes >/dev/null
+}
+
 run_control() {  # <case-dir> <args...>
   local dir=$1; shift
   env PATH="$dir/fakebin:$PATH" FM_HOME="$dir/home" FM_FAKE_DIR="$dir/fake" \
@@ -305,7 +312,7 @@ test_relaunch_preserves_durable_task_metadata() {
 }
 
 test_relaunch_preserves_status_writer_protocol_generation() {
-  local dir current_dir out rc
+  local dir current_dir migrated_dir out rc
   dir=$(new_case legacy-writer rl36)
   add_ship_task "$dir" rl36 claude
   printf '%s\n' 'Report status with echo "{state}: {one short line}" >> state/rl36.status.' \
@@ -321,13 +328,54 @@ test_relaunch_preserves_status_writer_protocol_generation() {
 
   current_dir=$(new_case current-writer rl37)
   add_ship_task "$current_dir" rl37 claude
+  write_current_ship_brief "$current_dir" rl37
   printf 'status_writer_protocol=%s\n' 'fm-status-append.v1' \
     >> "$current_dir/home/state/rl37.meta"
   out=$(run_control "$current_dir" rl37 relaunch --note "continue synchronized work"); rc=$?
   expect_code 0 "$rc" "versioned relaunch should succeed"$'\n'"$out"
   [ "$(meta_field "$current_dir" rl37 status_writer_protocol)" = 'fm-status-append.v1' ] \
     || fail "a versioned writer lost its synchronized protocol across relaunch"
-  pass "fm-control relaunch: status-writer protocol follows the unchanged worker generation"
+
+  migrated_dir=$(new_case migrated-writer rl40)
+  add_ship_task "$migrated_dir" rl40 claude
+  write_current_ship_brief "$migrated_dir" rl40
+  out=$(run_control "$migrated_dir" rl40 relaunch --note "continue migrated work"); rc=$?
+  expect_code 0 "$rc" "genuinely migrated relaunch should succeed"$'\n'"$out"
+  [ "$(meta_field "$migrated_dir" rl40 status_writer_protocol)" = 'fm-status-append.v1' ] \
+    || fail "a migrated brief did not replace its legacy writer identity"
+  pass "fm-control relaunch: status-writer protocol follows the delivered worker generation"
+}
+
+test_relaunch_refuses_status_writer_protocol_downgrade_or_contradiction() {
+  local dir contradictory_dir out rc
+  dir=$(new_case downgraded-writer rl41)
+  add_ship_task "$dir" rl41 claude
+  printf 'status_writer_protocol=fm-status-append.v1\n' >> "$dir/home/state/rl41.meta"
+  printf 'zsh' > "$dir/fake/command"
+  out=$(run_spawn "$dir" rl41 --relaunch); rc=$?
+  expect_code 1 "$rc" "v1 metadata with a current legacy brief should refuse"$'\n'"$out"
+  assert_contains "$out" "current brief has no matching protocol identity" \
+    "writer downgrade refusal did not identify the brief mismatch"
+  assert_no_grep "encode launch-brief" "$dir/fake/literal" \
+    "writer downgrade launched contradictory instructions"
+  [ "$(meta_field "$dir" rl41 status_writer_protocol)" = 'fm-status-append.v1' ] \
+    || fail "writer downgrade refusal changed the durable protocol identity"
+
+  contradictory_dir=$(new_case contradictory-writer rl42)
+  add_ship_task "$contradictory_dir" rl42 claude
+  write_current_ship_brief "$contradictory_dir" rl42
+  printf 'Status writer protocol: fm-status-append.v2\n' \
+    >> "$contradictory_dir/home/data/rl42/brief.md"
+  printf 'status_writer_protocol=fm-status-append.v1\n' \
+    >> "$contradictory_dir/home/state/rl42.meta"
+  printf 'zsh' > "$contradictory_dir/fake/command"
+  out=$(run_spawn "$contradictory_dir" rl42 --relaunch); rc=$?
+  expect_code 1 "$rc" "contradictory current brief identity should refuse"$'\n'"$out"
+  assert_contains "$out" "unsupported or ambiguous status-writer protocol" \
+    "contradictory brief refusal did not identify its unreadable protocol identity"
+  assert_no_grep "encode launch-brief" "$contradictory_dir/fake/literal" \
+    "contradictory brief identity launched worker instructions"
+  pass "fm-spawn relaunch: protocol downgrades and contradictory identities refuse"
 }
 
 test_away_mode_refuses_legacy_relaunch_but_allows_versioned_relaunch() {
@@ -351,6 +399,7 @@ test_away_mode_refuses_legacy_relaunch_but_allows_versioned_relaunch() {
 
   current_dir=$(new_case afk-current-writer rl39)
   add_ship_task "$current_dir" rl39 claude
+  write_current_ship_brief "$current_dir" rl39
   printf 'status_writer_protocol=fm-status-append.v1\n' \
     >> "$current_dir/home/state/rl39.meta"
   printf 'zsh' > "$current_dir/fake/command"
@@ -1381,6 +1430,7 @@ test_spawn_relaunch_refuses_a_pane_outside_the_worktree() {
 test_same_harness_relaunch_keeps_identity_and_reuses_the_endpoint
 test_relaunch_preserves_durable_task_metadata
 test_relaunch_preserves_status_writer_protocol_generation
+test_relaunch_refuses_status_writer_protocol_downgrade_or_contradiction
 test_away_mode_refuses_legacy_relaunch_but_allows_versioned_relaunch
 test_relaunch_serializes_concurrent_durable_metadata_publication
 test_disabled_relaunch_clears_prior_trace_context

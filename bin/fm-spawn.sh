@@ -1666,10 +1666,21 @@ BRIEF_STATUS_WRITER_PROTOCOL=$(awk -v current="$FM_STATUS_WRITER_PROTOCOL_CURREN
   exit 1
 }
 if [ "$RELAUNCH" -eq 1 ]; then
-  SPAWN_STATUS_WRITER_PROTOCOL=$RELAUNCH_STATUS_WRITER_PROTOCOL
-else
-  SPAWN_STATUS_WRITER_PROTOCOL=$BRIEF_STATUS_WRITER_PROTOCOL
+  case "$RELAUNCH_STATUS_WRITER_PROTOCOL" in
+    "$FM_STATUS_WRITER_PROTOCOL_CURRENT")
+      [ "$BRIEF_STATUS_WRITER_PROTOCOL" = "$FM_STATUS_WRITER_PROTOCOL_CURRENT" ] || {
+        echo "error: task $ID records status-writer protocol $FM_STATUS_WRITER_PROTOCOL_CURRENT, but its current brief has no matching protocol identity; restore or genuinely migrate the brief and return channel before relaunch" >&2
+        exit 1
+      }
+      ;;
+    ''|legacy-direct.retired) ;;
+    *)
+      echo "error: task $ID records unsupported status-writer protocol: $RELAUNCH_STATUS_WRITER_PROTOCOL" >&2
+      exit 1
+      ;;
+  esac
 fi
+SPAWN_STATUS_WRITER_PROTOCOL=$BRIEF_STATUS_WRITER_PROTOCOL
 if [ "$SPAWN_STATUS_WRITER_PROTOCOL" != "$FM_STATUS_WRITER_PROTOCOL_CURRENT" ]; then
   SPAWN_AFK_WRITER_LOCK="$STATE/.afk-status-writer.lock"
   fm_lock_acquire_wait "$SPAWN_AFK_WRITER_LOCK"
@@ -2682,11 +2693,8 @@ preserve_relaunch_meta() {
   echo "project=$PROJ_ABS"
   echo "harness=$HARNESS"
   echo "kind=$KIND"
-  if [ "$RELAUNCH" -eq 0 ] && [ -n "$BRIEF_STATUS_WRITER_PROTOCOL" ]; then
-    echo "status_writer_protocol=$BRIEF_STATUS_WRITER_PROTOCOL"
-  elif [ -n "$RELAUNCH_STATUS_WRITER_PROTOCOL" ] \
-    && [ "$RELAUNCH_STATUS_WRITER_PROTOCOL" != legacy-direct.retired ]; then
-    echo "status_writer_protocol=$RELAUNCH_STATUS_WRITER_PROTOCOL"
+  if [ -n "$SPAWN_STATUS_WRITER_PROTOCOL" ]; then
+    echo "status_writer_protocol=$SPAWN_STATUS_WRITER_PROTOCOL"
   fi
   [ -z "$MODE" ] || echo "mode=$MODE"
   [ -z "$YOLO" ] || echo "yolo=$YOLO"
