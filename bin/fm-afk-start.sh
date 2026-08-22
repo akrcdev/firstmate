@@ -36,6 +36,7 @@ FM_AFK_START_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FM_ROOT="${FM_ROOT_OVERRIDE:-$(cd "$FM_AFK_START_DIR/.." && pwd)}"
 FM_HOME="${FM_HOME:-${FM_ROOT_OVERRIDE:-$FM_ROOT}}"
 FM_AFK_STATE="${FM_STATE_OVERRIDE:-$FM_HOME/state}"
+FM_AFK_DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 FM_AFK_LOCK="$FM_AFK_STATE/.supervise-daemon.lock"
 FM_AFK_DAEMON="$FM_AFK_START_DIR/fm-supervise-daemon.sh"
 
@@ -130,6 +131,31 @@ fm_afk_flag_write() {  # <state-dir>
   return 1
 }
 
+fm_afk_legacy_status_writers() {
+  local meta id brief found=1
+  for meta in "$FM_AFK_STATE"/*.meta; do
+    [ -f "$meta" ] || continue
+    id=${meta##*/}
+    id=${id%.meta}
+    case "$id" in ''|*[!A-Za-z0-9._-]*) continue ;; esac
+    brief="$FM_AFK_DATA/$id/brief.md"
+    [ -f "$brief" ] && [ ! -L "$brief" ] || continue
+    if grep -F 'echo "{state}: {one short line}" >> ' "$brief" >/dev/null 2>&1; then
+      printf '%s\n' "$id"
+      found=0
+    fi
+  done
+  return "$found"
+}
+
+fm_afk_status_writer_preflight() {
+  local legacy
+  legacy=$(fm_afk_legacy_status_writers) || return 0
+  echo "afk: refusing activation while legacy direct status writers remain: $(printf '%s' "$legacy" | paste -sd, -)" >&2
+  echo "afk: rebrief or retire those tracked tasks, then retry; ordinary supervision remains active" >&2
+  return 1
+}
+
 fm_afk_start_main() {
   case "${1:-}" in
     '' ) ;;
@@ -138,6 +164,7 @@ fm_afk_start_main() {
   esac
 
   mkdir -p "$FM_AFK_STATE"
+  fm_afk_status_writer_preflight || return 1
   if [ "${FM_AFK_STATE_PREPARED:-0}" = 1 ]; then
     [ -f "$FM_AFK_STATE/.afk" ] || { echo "afk: launcher-prepared state is missing" >&2; return 1; }
   else

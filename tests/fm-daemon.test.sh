@@ -80,6 +80,32 @@ test_afk_start_reclaims_stale_daemon_lock_reused_pid() {
   pass "fm-afk-start.sh reclaims stale daemon locks whose live pid identity no longer matches"
 }
 
+test_afk_start_refuses_inflight_legacy_status_writer() {
+  local dir home state out status
+  dir=$(make_supercase afk-start-legacy-status-writer)
+  home="$dir/home"
+  state="$home/state"
+  mkdir -p "$home/data/legacy-task" "$state"
+  printf '%s\n' 'Report status by appending one line:' \
+    '   `echo "{state}: {one short line}" >> /old/home/state/legacy-task.status`' \
+    > "$home/data/legacy-task/brief.md"
+  printf '%s\n' 'window=synthetic:legacy-task' 'backend=tmux' 'kind=ship' \
+    > "$state/legacy-task.meta"
+
+  out=$(FM_HOME="$home" FM_STATE_OVERRIDE="$state" FM_SUPERVISOR_BACKEND=unsupported "$AFK_START" 2>&1)
+  status=$?
+
+  [ "$status" -ne 0 ] || fail "fm-afk-start.sh activated with an in-flight legacy status writer"
+  assert_contains "$out" "legacy direct status writers remain: legacy-task" \
+    "legacy writer refusal did not identify the tracked task"
+  assert_contains "$out" "rebrief or retire those tracked tasks" \
+    "legacy writer refusal did not provide its bounded upgrade path"
+  assert_not_contains "$out" "starting supervise daemon" \
+    "legacy writer refusal crossed the daemon activation boundary"
+  assert_absent "$state/.afk" "legacy writer refusal left away mode active"
+  pass "away activation fails closed until in-flight legacy status writers are retired"
+}
+
 test_daemon_state_root_uses_fm_home() {
   local dir home override out
   dir=$(make_supercase daemon-fm-home)
@@ -2129,6 +2155,7 @@ test_inject_msg_defers_on_unrecognized_composer_state() {
 test_afk_start_refuses_when_flag_cannot_be_written
 test_afk_start_ignores_stale_pidfile_without_lock
 test_afk_start_reclaims_stale_daemon_lock_reused_pid
+test_afk_start_refuses_inflight_legacy_status_writer
 test_daemon_state_root_uses_fm_home
 test_classify_routine_signal_self
 test_classify_terminal_signal_escalates

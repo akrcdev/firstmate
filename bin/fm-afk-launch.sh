@@ -471,6 +471,7 @@ fm_afk_launch_start() {
     fm_afk_launch_log "could not resolve the captain supervisor backend (set FM_SUPERVISOR_BACKEND)"; return 1; }
 
   mkdir -p "$FM_AFK_LAUNCH_STATE"
+  fm_afk_status_writer_preflight || return 1
 
   if daemon_lock_held_by_live_daemon; then
     fm_afk_launch_record_validate_if_present || return 1
@@ -534,6 +535,7 @@ fm_afk_launch_start_native() {
     fm_afk_launch_log "return catch-up is still pending; run bin/fm-afk-return.sh check before re-entering away mode"
     return 1
   fi
+  fm_afk_status_writer_preflight || return 1
   if daemon_lock_held_by_live_daemon; then
     fm_afk_launch_record_validate_if_present || return 1
     fm_afk_launch_flag_write || return 1

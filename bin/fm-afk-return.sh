@@ -52,7 +52,31 @@ EOF
 preserve_evidence() {  # <destination>
   local destination=$1
   [ -f "$GATE" ] || return 0
-  awk -F '\t' '$1 == "evidence" && $2 != "wake" && $2 != "decision" && $2 != "escalation"' "$GATE" \
+  awk -F '\t' '
+    $1 == "schema" { schema=$2; next }
+    $1 != "evidence" { next }
+    $2 == "decision" || $2 == "escalation" { next }
+    $2 != "wake" { print; next }
+    {
+      text=$3
+      for (i=4; i<=NF; i++) text=text FS $i
+      if (schema == "fm-afk-return.v1") {
+        if (text ~ /^OPEN DECISIONS \(still open, folded from the durable status logs - not just the latest line\):$/) {
+          decisions=1
+          next
+        }
+        if (decisions && text ~ /^OPEN DECISIONS: close one by answering it:/) {
+          decisions=0
+          next
+        }
+        if (decisions && text ~ /^[A-Za-z0-9._-]+ \[key=[A-Za-z0-9._-]+\] (needs-decision|blocked): /) next
+        decisions=0
+        if (text ~ /^wake annotation: .*: [A-Za-z0-9_-][A-Za-z0-9._-]*[.]status: (needs-decision|blocked|resolved)( \[key=[A-Za-z0-9._-]+\])?:/) next
+      }
+      $2="wake-nondecision"
+      print
+    }
+  ' OFS='\t' "$GATE" \
     >> "$destination" 2>/dev/null || true
 }
 
@@ -81,7 +105,7 @@ write_pending_seed() {  # Fail-closed marker before any lifecycle mutation.
   [ -n "$started" ] || started=$(date +%s)
   pending=$(mktemp "$STATE/.afk-return-catchup.pending.XXXXXX") || return 1
   {
-    printf 'schema\tfm-afk-return.v1\n'
+    printf 'schema\tfm-afk-return.v2\n'
     printf 'started\t%s\n' "$started"
     printf 'phase\tstopping-and-draining\n'
     preserve_evidence /dev/stdout
@@ -95,7 +119,7 @@ write_gate() {  # <evidence-file> <blockers-file>
   started=$(awk -F '\t' '$1 == "started" { print $2; exit }' "$GATE" 2>/dev/null || true)
   [ -n "$started" ] || started=$(date +%s)
   {
-    printf 'schema\tfm-afk-return.v1\n'
+    printf 'schema\tfm-afk-return.v2\n'
     printf 'started\t%s\n' "$started"
     printf 'phase\tblocked\n'
     cat "$evidence" 2>/dev/null || true

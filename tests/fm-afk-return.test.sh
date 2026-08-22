@@ -330,6 +330,40 @@ test_return_retry_preserves_nondecision_wake_evidence() {
   pass "away return retries preserve already-filtered non-decision wake evidence"
 }
 
+test_v1_gate_migrates_only_proven_decision_wakes() {
+  local dir gate out
+  dir="$TMP_ROOT/v1-wake-migration"
+  install_runner "$dir"
+  gate="$dir/home/state/.afk-return-catchup"
+  {
+    printf 'schema\tfm-afk-return.v1\n'
+    printf 'started\t1784074274\n'
+    printf 'phase\tblocked\n'
+    printf 'evidence\twake\twake annotation: latest wake-EVENT observed at drain, not current state: progress.status: note: release notes remain actionable\n'
+    printf 'evidence\twake\twake annotation: latest wake-EVENT observed at drain, not current state: progress.status: done: portable verification passed\n'
+    printf 'evidence\twake\twake annotation: latest wake-EVENT observed at drain, not current state: progress.status: failed: mirror upload needs review\n'
+    printf 'evidence\twake\twake annotation: latest wake-EVENT observed at drain, not current state: choice.status: blocked [key=route]: stale decision\n'
+    printf 'evidence\twake\tOPEN DECISIONS (still open, folded from the durable status logs - not just the latest line):\n'
+    printf 'evidence\twake\tchoice [key=route] needs-decision: stale route\n'
+    printf "evidence\twake\tOPEN DECISIONS: close one by answering it: bin/fm-send.sh <task> --resolve-key <key> '<answer>'\n"
+  } > "$gate"
+  : > "$dir/home/state/.fake-drain"
+
+  out=$(run_return "$dir" check) || fail "v1 catch-up gate migration did not clear: $out"
+  assert_contains "$out" 'note: release notes remain actionable' \
+    "v1 migration lost retained note evidence"
+  assert_contains "$out" 'done: portable verification passed' \
+    "v1 migration lost retained done evidence"
+  assert_contains "$out" 'failed: mirror upload needs review' \
+    "v1 migration lost retained failed evidence"
+  assert_not_contains "$out" 'stale decision' \
+    "v1 migration replayed proven decision annotation evidence"
+  assert_not_contains "$out" 'stale route' \
+    "v1 migration replayed the persisted open-decision section"
+  [ ! -e "$gate" ] || fail "successful v1 gate migration left the catch-up gate behind"
+  pass "v1 return gates retain non-decisions while removing proven decision evidence"
+}
+
 test_evidence_publication_failure_preserves_wake_for_redrain() {
   local dir out rc gate
   dir="$TMP_ROOT/evidence-publication-failure"
@@ -412,6 +446,7 @@ test_captain_decision_does_not_masquerade_as_firstmate_blocker
 test_return_revalidates_busy_buffer_before_presentation
 test_return_rebuilds_decision_bearing_wake_evidence
 test_return_retry_preserves_nondecision_wake_evidence
+test_v1_gate_migrates_only_proven_decision_wakes
 test_evidence_publication_failure_preserves_wake_for_redrain
 test_away_reentry_refuses_pending_return_gate
 test_check_retries_recorded_terminal_teardown
