@@ -23,6 +23,13 @@ set -u
 WATCH="$ROOT/bin/fm-watch.sh"
 DRAIN="$ROOT/bin/fm-wake-drain.sh"
 DAEMON="$ROOT/bin/fm-supervise-daemon.sh"
+TMP_ROOT=$(fm_test_tmproot fm-wake-daemon-e2e)
+
+# The executed daemon loads the portable queue/lock library in fm_super_main.
+# This test sources the daemon's functions without entering main, so load the
+# same dependency explicitly before exercising the sourceable flush path.
+FM_STATE_OVERRIDE="$TMP_ROOT/library-state" . "$ROOT/bin/fm-wake-lib.sh"
+unset FM_STATE_OVERRIDE
 
 # Source the daemon's pure functions (its main loop is guarded out under sourcing).
 if [ -z "${FM_TEST_DAEMON_SOURCED:-}" ]; then
@@ -30,8 +37,6 @@ if [ -z "${FM_TEST_DAEMON_SOURCED:-}" ]; then
   # shellcheck source=/dev/null
   . "$DAEMON"
 fi
-
-TMP_ROOT=$(fm_test_tmproot fm-wake-daemon-e2e)
 
 # Run the daemon-managed watcher once: under the supervise-daemon (away mode) the
 # watcher is one-shot - it exits with a single reason line on EVERY wake and the

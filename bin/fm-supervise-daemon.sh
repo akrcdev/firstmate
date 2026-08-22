@@ -448,8 +448,9 @@ classify_unknown() {  # <reason>
 #                                             line number, and display text.
 # Seen:     state/.subsuper-seen-status-<task>  last status line the scan
 #           escalated, so the catch-all does not re-fire the same terminal.
-#           state/.subsuper-seen-decision-<hash> stores task, key, opening line
-#           number, and display text as four tab-separated fields.
+#           state/.subsuper-seen-decision-<hash> stores task, key, status-file
+#           identity, opening line number, and display text as five tab-separated
+#           fields.
 
 _stale_key() { printf '%s' "$1" | tr ':/.' '___'; }
 

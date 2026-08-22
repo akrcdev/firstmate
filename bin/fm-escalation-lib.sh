@@ -1,4 +1,11 @@
 #!/usr/bin/env bash
+# fm-escalation-lib.sh - own away-mode escalation buffering and keyed-decision revalidation.
+#
+# Decision rows retain task, key, and opening-transition identity privately;
+# companion seen markers also retain status-file identity.
+# Together they let delayed delivery discard resolved records and treat a later
+# reopening as new work.
+# Non-decision rows remain opaque display text.
 set -u
 
 _fm_escalation_hash_text() {

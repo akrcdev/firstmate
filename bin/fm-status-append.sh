@@ -1,4 +1,12 @@
 #!/usr/bin/env bash
+# fm-status-append.sh - append one lifecycle event under the shared status-presentation lock.
+#
+# The status path must be absolute, end in `.status`, and name an existing
+# directory.
+# The event must be one line.
+# `--once` treats an exact existing line as success without appending it again.
+# This is the public writer for prompts and helpers that cannot source
+# `fm-wake-lib.sh`; direct writes can race away-mode decision presentation.
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
