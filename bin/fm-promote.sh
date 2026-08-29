@@ -70,7 +70,7 @@ done
 case "$MODE" in
   no-mistakes|direct-PR|local-only) ;;
   no-mistakes-prod-only)
-    echo "error: no-mistakes-prod-only is a registry policy, not a task mode; classify this task's surface and resolve it to no-mistakes or direct-PR" >&2
+    echo "error: no-mistakes-prod-only is a registry policy, not a task mode; classify this task's durability and consequence under AGENTS.md section 7, then resolve it to no-mistakes or direct-PR" >&2
     exit 1 ;;
   *) echo "error: --mode must be one of no-mistakes, direct-PR, local-only (got '$MODE')" >&2; exit 1 ;;
 esac
@@ -127,8 +127,12 @@ fm_lock_release "$META_LOCK"
 META_LOCK_HELD=0
 
 HOME_Q=$(printf '%q' "$FM_HOME")
+IMPLEMENT_INSTRUCTIONS="implement; report done"
+if [ "$MODE" = direct-PR ]; then
+  IMPLEMENT_INSTRUCTIONS="implement; run fit-for-purpose tests for the change; report done"
+fi
 echo "promoted $ID to ship mode=$MODE yolo=$YOLO (teardown protection restored)"
-echo "next: FM_HOME=$HOME_Q bin/fm-send.sh fm-$ID '<ship instructions for mode=$MODE: review scratch state with git status and git log; reset to a clean default-branch base; carry over only intended fix changes; create branch fm/$ID; implement; report done>'"
+echo "next: FM_HOME=$HOME_Q bin/fm-send.sh fm-$ID '<ship instructions for mode=$MODE: review scratch state with git status and git log; reset to a clean default-branch base; carry over only intended fix changes; create branch fm/$ID; $IMPLEMENT_INSTRUCTIONS>'"
 
 promote_print_rechain_hint() {
   local consent_home=$1 work_home=$2 task_id=$3 id prefix

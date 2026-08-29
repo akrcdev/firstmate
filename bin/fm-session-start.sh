@@ -647,6 +647,12 @@ if [ "$READ_ONLY" -eq 0 ]; then
     rm -f "$COMPLETION_FILE" 2>/dev/null || true
   fi
   fm_trace_context_session_start "$CONFIG" "$STATE/.trace-context-effective"
+  # A full locked start publishes this home's current structured summary.
+  # Publication is side-band and best-effort, so it can never change the
+  # session-start result. A context re-emit is not another session start.
+  if [ "$REEMIT" -eq 0 ]; then
+    "$SCRIPT_DIR/fm-home-summary-refresh.sh" --best-effort || true
+  fi
   # Every network call this session start owes is launched HERE, detached and
   # bounded, so it runs concurrently with the whole digest below instead of in
   # front of it. Step 7 harvests whatever it has finished, without ever waiting.
@@ -712,6 +718,19 @@ else
     "$SCRIPT_DIR/fm-inactive-reconcile.sh" scan --startup 2>&1) || INACTIVE_OUT=
   if [ -n "$INACTIVE_OUT" ]; then
     printf 'inactive outcome reconciliation: %s\n' "$INACTIVE_OUT"
+  fi
+  # Pi supervision-branch recovery, locked path only: clear leases whose
+  # supervising session died, and surface outcomes the branch stored durably
+  # that never reached main (docs/pi-supervision-branch.md). Gated to the
+  # pi/pi-signed primary so a non-Pi home runs neither step - homes on any
+  # other harness stay entirely untouched (captain-decided criterion).
+  if [ "$PRIMARY_HARNESS" = pi ] || [ "$PRIMARY_HARNESS" = pi-signed ]; then
+    FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" "$SCRIPT_DIR/fm-lease.sh" sweep 2>/dev/null || true
+    BRANCH_REPLAY_OUT=$(FM_HOME="$FM_HOME" FM_STATE_OVERRIDE="$STATE" \
+      "$SCRIPT_DIR/fm-branch-outcome.sh" startup-replay 2>&1) || BRANCH_REPLAY_OUT=
+    if [ -n "$BRANCH_REPLAY_OUT" ]; then
+      printf '%s\n' "$BRANCH_REPLAY_OUT"
+    fi
   fi
   DRAIN_OUT=$("$SCRIPT_DIR/fm-wake-drain.sh" 2>&1)
   if [ -n "$DRAIN_OUT" ]; then

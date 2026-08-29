@@ -16,7 +16,7 @@
 # a clone of that project in this home; a bare <project> is accepted only when
 # this home already has projects/<project>, whose origin is then read instead.
 # bin/fm-project-origin-lib.sh owns which URLs are accepted, and this home's
-# data/projects.md still owns the project's registered delivery mode, so an
+# data/projects.md still owns the project's registered standing delivery posture, so an
 # unregistered or local-only project is refused rather than provisioned.
 # Seeding writes nothing under projects/ and needs no fleet sync first.
 #
@@ -242,7 +242,7 @@ if [ "$PREFLIGHT_RC" -ne 0 ]; then
 fi
 
 set +e
-PROVISION_OUT=$("$SCRIPT_DIR/fm-on.sh" "$ID" fm-remote-home-provision.sh < "$TMP/manifest" 2>&1)
+PROVISION_OUT=$("$SCRIPT_DIR/fm-on.sh" --stdin "$ID" fm-remote-home-provision.sh < "$TMP/manifest" 2>&1)
 PROVISION_RC=$?
 set -e
 if [ "$PROVISION_RC" -ne 0 ]; then

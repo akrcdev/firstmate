@@ -212,6 +212,10 @@ test_ship_modes_generate_clean_briefs() {
     assert_grep "{TASK}" "$brief" "$id: brief missing the {TASK} placeholder"
     assert_grep "mid-task \`working:\` line (including setup complete) is nonterminal" "$brief" \
       "$id: brief missing nonterminal working:/setup-complete gate protection"
+    if [ "$mode" = direct-PR ]; then
+      assert_grep "Run fit-for-purpose tests for the change before pushing" "$brief" \
+        "$id: lighter PR brief did not retain fit-for-purpose testing"
+    fi
     assert_no_grep "EOF" "$brief" "$id: brief leaked a heredoc EOF marker (unterminated heredoc)"
   done
   pass "fm-brief.sh: no-mistakes/direct-PR/local-only briefs generate cleanly"
@@ -220,7 +224,7 @@ test_ship_modes_generate_clean_briefs() {
 # A ship task's delivery mode is firstmate's per-task decision, so a missing or
 # unusable value must stop the scaffold instead of silently defaulting. The
 # no-mistakes-prod-only row is the conditional registry policy: it is never a task
-# mode, and its refusal must say to classify the task's surface first.
+# mode, and its refusal must point to the authoritative intake classification.
 test_ship_mode_is_required_and_closed_set() {
   local home id out status label flag expect
   home="$TMP_ROOT/mode-required-home"
@@ -239,7 +243,7 @@ test_ship_mode_is_required_and_closed_set() {
 missing --mode||ship briefs require --mode
 empty --mode value|--mode|requires a value
 unknown mode value|--mode nope|must be one of no-mistakes, direct-PR, local-only
-conditional policy is not a task mode|--mode no-mistakes-prod-only|classify this task's surface
+conditional policy is not a task mode|--mode no-mistakes-prod-only|classify this task's durability and consequence
 ROWS
   pass "fm-brief.sh: ship --mode is required and closed-set validated"
 }
@@ -439,6 +443,41 @@ test_herdr_lab_omission_is_loud_for_ship_and_scout() {
   pass "fm-brief.sh: ship and scout scaffolds make omitted Herdr intent fail-visible"
 }
 
+# Regression (issue #2575): AGENTS.md section 11 and this script's own help tell
+# firstmate to replace EVERY `{TASK}` placeholder. The unguarded Herdr gate used
+# to quote `{TASK}` in its own prose, so that documented global replace spliced
+# the whole task body into the middle of the gate's sentence - silently
+# destroying the one contract that exists precisely because the scaffold cannot
+# see the task text. The placeholder must exist only at the genuine fill site,
+# so the documented fill leaves the gate intact and the body appears once.
+test_documented_global_replace_leaves_the_herdr_gate_intact() {
+  local home id brief kind count content filled body
+  home="$TMP_ROOT/task-fill-site-home"
+  mkdir -p "$home/data"
+  body='Restart the herdr session, then profile it'
+  for kind in ship scout; do
+    id="brief-fill-site-$kind"
+    if [ "$kind" = scout ]; then
+      FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" firstmate --scout >/dev/null 2>&1
+    else
+      FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" firstmate --mode no-mistakes >/dev/null 2>&1
+    fi
+    brief="$home/data/$id/brief.md"
+    assert_present "$brief" "$kind brief was not scaffolded"
+    count=$(grep -c -F '{TASK}' "$brief")
+    [ "$count" = 1 ] \
+      || fail "$kind brief must carry exactly one {TASK} fill site, found $count"
+    content=$(cat "$brief")
+    filled=${content//'{TASK}'/$body}
+    count=$(printf '%s\n' "$filled" | grep -c -F "$body")
+    [ "$count" = 1 ] \
+      || fail "$kind brief: the documented global {TASK} replace duplicated the task body $count times"
+    printf '%s\n' "$filled" | grep -qF 'this scaffold cannot inspect the task text' \
+      || fail "$kind brief: the Herdr safety gate did not survive the documented global replace"
+  done
+  pass "fm-brief.sh: the documented {TASK} fill cannot corrupt the Herdr safety gate"
+}
+
 test_secondmate_no_projects_charter() {
   local home brief status
   home="$TMP_ROOT/no-projects-home"
@@ -519,8 +558,12 @@ test_secondmate_marked_request_reporting_contract() {
     "secondmate charter lost detailed document pointers"
   assert_grep 'Report only true captain-relevant outcomes or a declared external wait' "$brief" \
     "secondmate charter lost declared external waits"
-  assert_grep 'a captain decision, a real blocker, a failure, or work ready for review' "$brief" \
-    "secondmate charter lost decisions, blockers, failures, or ready outcomes"
+  assert_grep 'a captain decision, a real blocker, a failure, work ready for review, or work you landed' "$brief" \
+    "secondmate charter lost decisions, blockers, failures, ready outcomes, or landed work"
+  # Under standing merge authority nothing is ever "ready for review", so the
+  # landed merge is the trigger a charter without this line silently omits.
+  assert_grep 'a merge you performed yourself under standing merge authority and one the captain merged on the forge' "$brief" \
+    "secondmate charter did not name a landed merge as a reporting trigger"
   assert_grep 'States: working, needs-decision, blocked, paused, done, failed.' "$brief" \
     "secondmate charter changed the preserved status vocabulary"
   pass "fm-brief.sh: marked requests avoid generic acknowledgements and preserve material reporting"
@@ -725,6 +768,7 @@ test_ship_project_memory_wording
 test_herdr_lab_contract_is_explicit_and_complete
 test_herdr_lab_contract_quotes_foreign_firstmate_path
 test_herdr_lab_omission_is_loud_for_ship_and_scout
+test_documented_global_replace_leaves_the_herdr_gate_intact
 test_herdr_lab_contract_applies_to_scouts_but_not_secondmates
 test_secondmate_no_projects_charter
 test_secondmate_marked_request_reporting_contract

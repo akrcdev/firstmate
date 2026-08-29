@@ -21,8 +21,8 @@
 #   direct-PR              push + PR via gh-axi, no pipeline
 #   local-only             local branch, no remote/PR, guarded local merge
 #   no-mistakes-prod-only  a conditional policy, not a task mode: firstmate
-#                          classifies each task's surface at intake (the
-#                          project-management skill owns that classification).
+#                          classifies each task's durability and consequence at
+#                          intake (AGENTS.md section 7 owns the classification).
 #                          Mechanical output maps it to its most rigorous leg,
 #                          no-mistakes, so sync, seeding, and init treat such a
 #                          project as the remote-backed pipeline project it is.
