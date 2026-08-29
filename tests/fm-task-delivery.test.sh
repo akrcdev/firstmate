@@ -83,7 +83,7 @@ missing --yolo|--mode no-mistakes|ship spawns require --yolo
 missing --mode|--yolo off|ship spawns require --mode
 unknown mode|--mode nope --yolo off|must be one of no-mistakes, direct-PR, local-only
 unknown yolo|--mode no-mistakes --yolo maybe|--yolo must be on or off
-conditional policy as a task mode|--mode no-mistakes-prod-only --yolo off|classify this task's surface
+conditional policy as a task mode|--mode no-mistakes-prod-only --yolo off|classify this task's durability and consequence
 ROWS
   pass "fm-spawn: a ship spawn requires a valid explicit mode and yolo before anything is created"
 }
@@ -225,7 +225,7 @@ test_promote_requires_and_records_the_delivery_contract() {
   out=$(FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" "$PROMOTE" promote-d1 --mode no-mistakes-prod-only --yolo off 2>&1)
   status=$?
   [ "$status" -ne 0 ] || fail "promotion on a conditional policy should exit non-zero"
-  assert_contains "$out" "classify this task's surface" "promote did not refuse the conditional policy as a task mode"
+  assert_contains "$out" "classify this task's durability and consequence" "promote did not refuse the conditional policy as a task mode"
 
   out=$(FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" "$PROMOTE" promote-d1 --mode direct-PR --yolo on 2>&1)
   status=$?
@@ -248,7 +248,9 @@ test_project_mode_maps_the_conditional_policy() {
   cat > "$home/data/projects.md" <<'EOF'
 - prodproj [no-mistakes-prod-only] - fixture (added 2026-01-01)
 - yoloproj [no-mistakes-prod-only +yolo] - fixture (added 2026-01-01)
+- strictproj [no-mistakes] - fixture (added 2026-01-01)
 - flatproj [direct-PR] - fixture (added 2026-01-01)
+- localproj [local-only] - fixture (added 2026-01-01)
 - typoproj [no-mistakez] - fixture (added 2026-01-01)
 EOF
   out=$(FM_HOME="$home" "$PROJECT_MODE" prodproj 2>/dev/null)
@@ -262,14 +264,20 @@ EOF
   out=$(FM_HOME="$home" "$PROJECT_MODE" --raw prodproj 2>/dev/null)
   [ "$out" = "no-mistakes-prod-only off" ] || fail "--raw did not expose the registered annotation (got '$out')"
 
+  out=$(FM_HOME="$home" "$PROJECT_MODE" --raw strictproj 2>/dev/null)
+  [ "$out" = "no-mistakes off" ] || fail "--raw reinterpreted an explicit flat no-mistakes posture (got '$out')"
+
   out=$(FM_HOME="$home" "$PROJECT_MODE" --raw flatproj 2>/dev/null)
-  [ "$out" = "direct-PR off" ] || fail "--raw altered a flat registered mode (got '$out')"
+  [ "$out" = "direct-PR off" ] || fail "--raw reinterpreted an explicit flat direct-PR posture (got '$out')"
+
+  out=$(FM_HOME="$home" "$PROJECT_MODE" --raw localproj 2>/dev/null)
+  [ "$out" = "local-only off" ] || fail "--raw reinterpreted an explicit flat local-only posture (got '$out')"
 
   out=$(FM_HOME="$home" "$PROJECT_MODE" typoproj 2>/dev/null)
   [ "$out" = "no-mistakes off" ] || fail "a typo'd mode no longer falls back to the most rigorous default"
   err=$(FM_HOME="$home" "$PROJECT_MODE" typoproj 2>&1 >/dev/null)
   assert_contains "$err" "unknown mode" "a typo'd registry mode stopped warning"
-  pass "fm-project-mode: the conditional policy is accepted, mapped for mechanical callers, and readable raw"
+  pass "fm-project-mode: the conditional policy maps for mechanical callers while explicit flat postures remain unchanged"
 }
 
 test_ship_spawn_requires_a_valid_delivery_contract

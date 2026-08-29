@@ -212,6 +212,10 @@ test_ship_modes_generate_clean_briefs() {
     assert_grep "{TASK}" "$brief" "$id: brief missing the {TASK} placeholder"
     assert_grep "mid-task \`working:\` line (including setup complete) is nonterminal" "$brief" \
       "$id: brief missing nonterminal working:/setup-complete gate protection"
+    if [ "$mode" = direct-PR ]; then
+      assert_grep "Run fit-for-purpose tests for the change before pushing" "$brief" \
+        "$id: lighter PR brief did not retain fit-for-purpose testing"
+    fi
     assert_no_grep "EOF" "$brief" "$id: brief leaked a heredoc EOF marker (unterminated heredoc)"
   done
   pass "fm-brief.sh: no-mistakes/direct-PR/local-only briefs generate cleanly"
@@ -220,7 +224,7 @@ test_ship_modes_generate_clean_briefs() {
 # A ship task's delivery mode is firstmate's per-task decision, so a missing or
 # unusable value must stop the scaffold instead of silently defaulting. The
 # no-mistakes-prod-only row is the conditional registry policy: it is never a task
-# mode, and its refusal must say to classify the task's surface first.
+# mode, and its refusal must point to the authoritative intake classification.
 test_ship_mode_is_required_and_closed_set() {
   local home id out status label flag expect
   home="$TMP_ROOT/mode-required-home"
@@ -239,7 +243,7 @@ test_ship_mode_is_required_and_closed_set() {
 missing --mode||ship briefs require --mode
 empty --mode value|--mode|requires a value
 unknown mode value|--mode nope|must be one of no-mistakes, direct-PR, local-only
-conditional policy is not a task mode|--mode no-mistakes-prod-only|classify this task's surface
+conditional policy is not a task mode|--mode no-mistakes-prod-only|classify this task's durability and consequence
 ROWS
   pass "fm-brief.sh: ship --mode is required and closed-set validated"
 }

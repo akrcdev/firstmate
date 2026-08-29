@@ -385,7 +385,7 @@ else
     case "$MODE" in
       no-mistakes|direct-PR|local-only) ;;
       no-mistakes-prod-only)
-        echo "error: no-mistakes-prod-only is a registry policy, not a task mode; classify this task's surface and resolve it to no-mistakes or direct-PR at intake" >&2
+        echo "error: no-mistakes-prod-only is a registry policy, not a task mode; classify this task's durability and consequence under AGENTS.md section 7, then resolve it to no-mistakes or direct-PR at intake" >&2
         exit 1 ;;
       *) echo "error: --mode must be one of no-mistakes, direct-PR, local-only (got '$MODE')" >&2; exit 1 ;;
     esac
