@@ -249,6 +249,8 @@ test_promote_requires_and_records_the_delivery_contract() {
   assert_grep 'mode=direct-PR' "$meta" "promotion did not record the decided delivery mode"
   assert_grep 'yolo=on' "$meta" "promotion did not record the decided merge posture"
   assert_contains "$out" "ship instructions for mode=direct-PR" "promotion hint did not carry the decided mode"
+  assert_contains "$out" "run fit-for-purpose tests for the change" \
+    "promoted direct-PR scout did not retain the lighter path's testing contract"
   [ "$(grep -c '^mode=' "$meta")" = 1 ] || fail "promotion left more than one mode= line in the task record"
   pass "fm-promote: promotion requires the delivery contract and records it exactly once"
 }
