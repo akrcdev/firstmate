@@ -293,8 +293,8 @@ Load `diagnostic-reasoning` before scoping a reported bug and before acting on a
 
 Resolve every ship task's concrete delivery mode and `yolo` merge posture at intake.
 Pass the mode explicitly to the brief, and pass both values explicitly to the spawn and any scout promotion; each command refuses to guess the values it consumes.
-An explicit flat `no-mistakes`, `direct-PR`, or `local-only` registry posture remains controlling until a newer captain instruction changes that project's registry entry.
-Otherwise, a current explicit captain instruction wins; absent one, the project's registry entry is the captain's standing posture, and dropping below its rigor needs a reason you can state.
+A current explicit captain instruction may override any registered posture for that one task without rewriting the registry or creating standing precedent.
+Otherwise, an explicit flat `no-mistakes`, `direct-PR`, or `local-only` registry posture remains the project's controlling standing default and is not reinterpreted through the conditional policy; selecting less rigor still requires the mismatch notice and a reason you can state.
 On a `no-mistakes-prod-only` project, use `no-mistakes` for durable product code, changes to established projects, and work that would ordinarily merit independent human review; small size alone never exempts durable code.
 Use `direct-PR` only when none of those full-pipeline conditions applies and the work is a disposable prototype, a pre-MVP experiment, or genuinely low-consequence internal work, and retain fit-for-purpose testing on that lighter path.
 Standalone research and planning deliverables remain knowledge work or scouts under the classification above rather than being forced through a code-delivery pipeline; bounded research inside an authorized ship remains part of that ship.
