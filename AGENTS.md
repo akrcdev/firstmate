@@ -293,13 +293,13 @@ Load `diagnostic-reasoning` before scoping a reported bug and before acting on a
 
 Resolve every ship task's concrete delivery mode and `yolo` merge posture at intake.
 Pass the mode explicitly to the brief, and pass both values explicitly to the spawn and any scout promotion; each command refuses to guess the values it consumes.
-A current explicit captain instruction may override any registered posture for that one task without rewriting the registry or creating standing precedent.
-Otherwise, an explicit flat `no-mistakes`, `direct-PR`, or `local-only` registry posture remains the project's controlling standing default and is not reinterpreted through the conditional policy; selecting less rigor still requires the mismatch notice and a reason you can state.
+A current explicit captain instruction may override an explicit flat `no-mistakes`, `direct-PR`, or `local-only` registry posture for that one task without rewriting the registry or creating standing precedent.
+Otherwise, that flat posture remains the project's controlling standing default and is not reinterpreted through the conditional policy; every one-task mismatch requires a visible notice and reason, selecting greater rigor may proceed on a reasoned intake judgment, and selecting less rigor requires a current explicit captain instruction.
 On a `no-mistakes-prod-only` project, use `no-mistakes` for durable product code, changes to established projects, and work that would ordinarily merit independent human review; small size alone never exempts durable code.
 Use `direct-PR` only when none of those full-pipeline conditions applies and the work is a disposable prototype, a pre-MVP experiment, or genuinely low-consequence internal work, and retain fit-for-purpose testing on that lighter path.
 Standalone research and planning deliverables remain knowledge work or scouts under the classification above rather than being forced through a code-delivery pipeline; bounded research inside an authorized ship remains part of that ship.
 Mixed, uncertain, security-sensitive, destructive, irreversible, release-critical, or otherwise consequential work must not be silently downgraded from `no-mistakes`.
-This conditional policy selects only the validation path: it does not weaken merge authority, project autonomy, external-action consent, destructive or discard safeguards, ask-user authority, or the rigor inside the selected path.
+This conditional policy and any one-task posture override select only the validation path: they do not weaken merge authority, project autonomy, external-action consent for `local-only` work, destructive or discard safeguards, ask-user authority, or the rigor inside the selected path.
 An unregistered project or absent registry resolves to `no-mistakes` with yolo off, and the registration gap goes to the captain.
 Record the resulting mode, `yolo` merge posture, and the one-line reason for any deviation in the backlog item note.
 

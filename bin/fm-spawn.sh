@@ -12,8 +12,8 @@
 #   "Delivery contract: mode=<mode>" line and REFUSES a mismatch, so the worker's
 #   instructions and the recorded task delivery cannot drift apart; a brief
 #   scaffolded before that line existed warns once and launches on the flag. When
-#   the explicit mode carries less rigor than the project's standing posture, a
-#   loud one-line deviation notice is printed and the spawn continues.
+#   the explicit mode differs from a flat project standing posture, a loud one-line
+#   deviation notice is printed and the spawn continues.
 #   no-mistakes-prod-only is a registry policy rather than a task mode and is
 #   refused as a flag value.
 #        fm-spawn.sh <task-id> --relaunch [--harness <name>] [--model <name>] [--effort <level>]
@@ -1690,15 +1690,19 @@ if [ "$KIND" = ship ]; then
     echo "error: delivery mismatch for $ID: the brief says mode=$BRIEF_MODE but this spawn passed --mode $MODE; correct the flag or re-scaffold the brief so the worker's instructions and the task record agree" >&2
     exit 1
   fi
-  # The registry holds the captain's standing posture, so dropping below it is
-  # allowed (a current explicit captain instruction wins) but never silent. An
-  # unregistered project resolves to the same no-mistakes standing default, which
-  # is why the notice names the standing posture rather than the registry line. A
-  # conditional policy is excluded: both of its legs are legitimate classifications.
+  # The registry holds the captain's standing posture, so a different task mode is
+  # never silent. An unregistered project resolves to the same no-mistakes standing
+  # default, which is why the notice names the standing posture rather than the
+  # registry line. A conditional policy is excluded: both of its legs are legitimate
+  # classifications.
   STANDING_MODE=$("$FM_ROOT/bin/fm-project-mode.sh" --raw "$PROJ_NAME" 2>/dev/null | cut -d' ' -f1) || STANDING_MODE=
   if [ -n "$STANDING_MODE" ] && [ "$STANDING_MODE" != no-mistakes-prod-only ] \
-     && [ "$(delivery_rigor_rank "$MODE")" -lt "$(delivery_rigor_rank "$STANDING_MODE")" ]; then
-    echo "notice: $ID ships mode=$MODE while the standing posture for $PROJ_NAME is $STANDING_MODE - less rigor than the captain's standing posture; proceed only on a current explicit captain instruction or an intake judgment you can state" >&2
+     && [ "$MODE" != "$STANDING_MODE" ]; then
+    if [ "$(delivery_rigor_rank "$MODE")" -lt "$(delivery_rigor_rank "$STANDING_MODE")" ]; then
+      echo "notice: delivery posture mismatch for $ID: mode=$MODE is less rigorous than the standing posture $STANDING_MODE for $PROJ_NAME; proceed only on a current explicit captain instruction, record its one-task reason, and leave the standing default unchanged" >&2
+    else
+      echo "notice: delivery posture mismatch for $ID: mode=$MODE is more rigorous than the standing posture $STANDING_MODE for $PROJ_NAME; record the one-task reason and leave the standing default unchanged; this selection does not grant outward consent for local-only work" >&2
+    fi
   fi
 fi
 

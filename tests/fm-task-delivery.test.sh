@@ -146,12 +146,13 @@ EOF
   pass "fm-spawn: the brief's recorded mode and the spawn's explicit mode must agree"
 }
 
-# The registry is the captain's standing posture, so dropping below its rigor is
-# allowed but never silent, while matching or exceeding it stays quiet. An
-# unregistered project resolves to the same no-mistakes standing default
-# (AGENTS.md section 7), so a downgrade there is announced too. A conditional
-# policy is excluded because both of its legs are legitimate classifications.
-test_spawn_notices_a_rigor_downgrade_against_the_registry() {
+# The registry is the captain's standing posture, so every mismatch against a flat
+# posture is visible. A reduction names the current explicit captain instruction as
+# its only authority, while a reasoned increase remains permitted without granting
+# outward consent. An unregistered project resolves to the same no-mistakes standing
+# default (AGENTS.md section 7). A conditional policy is excluded because both of
+# its legs are legitimate classifications.
+test_spawn_notices_every_flat_posture_mismatch() {
   local rec home proj fakebin out label mode registry expect registered n=0
   while IFS='|' read -r label registry mode expect registered; do
     [ -n "$label" ] || continue
@@ -164,23 +165,37 @@ EOF
     out=$(run_spawn "$home" "$fakebin" "delivery-dev-$n" "$proj" claude --mode "$mode" --yolo off)
     case "$expect" in
       notice)
-        assert_contains "$out" "less rigor than the captain's standing posture" \
-          "$label: no deviation notice for a rigor downgrade"
-        assert_contains "$out" "the standing posture for proj is $registered" \
+        assert_contains "$out" "delivery posture mismatch" \
+          "$label: no deviation notice for a flat-posture mismatch"
+        assert_contains "$out" "standing posture $registered for proj" \
           "$label: notice did not name the standing posture it compared against" ;;
       quiet)
-        assert_not_contains "$out" "less rigor than the captain's standing posture" \
-          "$label: printed a deviation notice that is not a downgrade" ;;
+        assert_not_contains "$out" "delivery posture mismatch" \
+          "$label: printed a deviation notice without a flat-posture mismatch" ;;
+    esac
+    case "$label" in
+      "no-mistakes project shipped direct-PR"|"no-mistakes project shipped local-only"|unregistered*)
+        assert_contains "$out" "proceed only on a current explicit captain instruction" \
+          "$label: a rigor reduction admitted authority other than a current explicit captain instruction"
+        assert_not_contains "$out" "intake judgment" \
+          "$label: a rigor reduction still admitted an intake judgment" ;;
+      "local-only project shipped no-mistakes")
+        assert_contains "$out" "more rigorous" \
+          "$label: a stricter one-task selection was not identified"
+        assert_contains "$out" "record the one-task reason" \
+          "$label: a stricter one-task selection did not require a visible reason"
+        assert_contains "$out" "does not grant outward consent for local-only work" \
+          "$label: a stricter local-only deviation weakened outward-consent requirements" ;;
     esac
   done <<'ROWS'
 no-mistakes project shipped direct-PR|- proj [no-mistakes] - fixture (added 2026-01-01)|direct-PR|notice|no-mistakes
 no-mistakes project shipped local-only|- proj [no-mistakes] - fixture (added 2026-01-01)|local-only|notice|no-mistakes
 no-mistakes project shipped no-mistakes|- proj [no-mistakes] - fixture (added 2026-01-01)|no-mistakes|quiet|no-mistakes
-local-only project shipped no-mistakes|- proj [local-only] - fixture (added 2026-01-01)|no-mistakes|quiet|local-only
+local-only project shipped no-mistakes|- proj [local-only] - fixture (added 2026-01-01)|no-mistakes|notice|local-only
 conditional policy shipped direct-PR|- proj [no-mistakes-prod-only] - fixture (added 2026-01-01)|direct-PR|quiet|no-mistakes-prod-only
 unregistered project resolves to the no-mistakes standing default|- other [no-mistakes] - fixture (added 2026-01-01)|direct-PR|notice|no-mistakes
 ROWS
-  pass "fm-spawn: a rigor downgrade against the registered posture is announced, never blocked"
+  pass "fm-spawn: every flat-posture mismatch is announced with the correct authority"
 }
 
 # A scout's deliverable is a report, so it records no delivery posture at all;
@@ -283,7 +298,7 @@ EOF
 test_ship_spawn_requires_a_valid_delivery_contract
 test_scout_and_secondmate_refuse_delivery_flags
 test_spawn_refuses_a_brief_mode_mismatch
-test_spawn_notices_a_rigor_downgrade_against_the_registry
+test_spawn_notices_every_flat_posture_mismatch
 test_scout_records_no_delivery_posture
 test_promote_requires_and_records_the_delivery_contract
 test_project_mode_maps_the_conditional_policy
