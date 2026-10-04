@@ -2807,7 +2807,7 @@ test_pi_idle_health() {
   local mode=$1 repo="$TMP_ROOT/health-$1" out status
   mkdir -p "$repo/bin" "$repo/state" "$repo/config"
   install_pi_watch_extension_fixture "$repo"
-  cp "$ROOT/bin/fm-wake-lib.sh" "$ROOT/bin/fm-path-lib.sh" "$repo/bin/"
+  cp "$ROOT/bin/fm-wake-lib.sh" "$repo/bin/" || fail 'could not install the watcher health fixture'
   # A bounded fixture descendant deliberately outlives its diagnostic shell.
   cat >> "$repo/bin/fm-wake-lib.sh" <<'SH'
 if [ -e "$STATE/probe-hang" ]; then

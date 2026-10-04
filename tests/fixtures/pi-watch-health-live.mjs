@@ -78,7 +78,7 @@ globalThis.fetch = async (input, options) => {
       name: 'bash', arguments: JSON.stringify({ command: `bash '${repo}/bin/fm-wake-drain.sh'` }),
     } }] }; finish = 'tool_calls';
   } else {
-    const ack = drained.match(/WAKE_ACK_REQUIRED:\s*([^\n]+)/)?.[1];
+    const ack = drained.match(/WAKE_ACK_REQUIRED: after handling completes run ([^\n]+)/)?.[1];
     if (ack && toolMessages.length === 1) {
       delta = { role: 'assistant', tool_calls: [{ index: 0, id: `ack-${++requests}`, type: 'function', function: { name: 'bash', arguments: JSON.stringify({ command: ack }) } }] };
       finish = 'tool_calls';
@@ -107,7 +107,8 @@ const { session } = await createAgentSession({ cwd: repo, agentDir, modelRuntime
 });
 session.subscribe(event => {
   if (event.type === 'message_end') {
-    timeline.push({ time: Date.now(), role: event.message.role, text: text(event.message.content) });
+    timeline.push({ time: Date.now(), role: event.message.role, text: text(event.message.content),
+      ...(event.message.role === 'toolResult' ? { isError: event.message.isError } : {}) });
     if (event.message.role === 'assistant' && event.message.stopReason === 'stop') finals.push(text(event.message.content));
   }
 });
@@ -136,6 +137,8 @@ try {
   const persisted = readFileSync(session.sessionFile, 'utf8');
   if (!persisted.includes(expected)) throw new Error('final absent from real Pi JSONL');
   if (!timeline.some(e => e.role === 'toolResult' && e.text.includes(done ? 'SYNTHETIC_DONE' : 'SYNTHETIC_ACCESS'))) throw new Error('provider answered without drain evidence');
+  if (timeline.some(e => e.role === 'toolResult' && e.isError)) throw new Error(`tool execution failed: ${JSON.stringify(timeline)}`);
+  if (existsSync(`${state}/.wake-queue`) && readFileSync(`${state}/.wake-queue`, 'utf8').trim()) throw new Error('wake queue still contains unacknowledged notifications');
   if (scenario === 'contended') {
     process.kill(process.pid, 0);
     if (readFileSync(`${lab}/claims/legacy.lock/pid`, 'utf8').trim() !== String(process.pid)) throw new Error('unrelated source lock changed');

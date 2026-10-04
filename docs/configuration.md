@@ -591,7 +591,7 @@ A queued `check` delivery is reported at most once per captured source and seque
 A durable handled acknowledgement stops future source re-announcement, while a record already queued remains under the durable queue's authority until the ordinary drain's sequence-bound post-handling acknowledgement consumes it.
 
 Discovery is never a timer.
-Each registered source has its own child process blocking on that source, and the watcher's per-cycle `reconcile` republishes every captured result with no durable handled acknowledgement yet - regardless of any earlier publication - restarts a source whose owner is gone, and stops this home's runner when reconciliation runs after its registration disappeared unexpectedly.
+Each registered source has its own child process blocking on that source, and the watcher's per-cycle `reconcile` repairs delivery and liveness under the contention and retry contract in [`bin/fm-procevent.sh`](../bin/fm-procevent.sh).
 In supported steady state, a home with no registered source runs nothing, generates no state, and keeps its ordinary cadence.
 
 Whether a captured result is a routine no-op is adapter knowledge too, and the runner names no adapter-specific condition for it either.

@@ -27,6 +27,9 @@
 #            republish every durably captured result with no handled
 #            acknowledgement yet - regardless of any earlier publication - and
 #            start a runner for any registered source that has no live owner.
+#            Contended source locks are deferred without consuming results or
+#            waiting, so optional reconciliation cannot stall worker-status scans.
+#            Explicit mutations retain waiting locks.
 #            This is liveness repair only - it never discovers results by
 #            polling the source, because the child blocks on the source itself.
 # handled    Durably and idempotently record that a captured result has been
@@ -262,7 +265,8 @@ cmd_register() {
 # Publish every durably captured result with no handled acknowledgement yet.
 # Capture already happened, so this only turns durable state into durable
 # events - and it republishes on every call regardless of any earlier
-# publication, so a result stays eligible for re-announcement across restarts
+# publication when its source lock is available, so a result stays eligible
+# for re-announcement across restarts
 # and drains until `fm_procevent_mark_handled` records it.
 publish_result() {  # <result-file> [opportunistic]
   local result=$1 opportunistic=${2:-0} id seq adapter line status=1

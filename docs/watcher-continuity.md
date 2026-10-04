@@ -96,8 +96,8 @@ The file is size-capped through `FM_WATCH_CYCLE_LOG_MAX_BYTES` and `FM_WATCH_CYC
 The default 300-second grace is unchanged.
 Only the watcher process touches `state/.last-watcher-beat`; no helper process can make a wedged watcher appear healthy.
 Pi's active generation observes that shared identity/beacon predicate while idle, reports unconfirmed health rather than trusting an occupied arm child, and requests a new main drain when worker status changes during an outage.
-Optional process-event reconciliation defers contended source locks without consuming their durable results, leaving mandatory worker-status scans able to proceed.
-The drain's existing unread-status cursor also presents completions and failures without a queued signal; routine working lines remain silent.
+The optional process-event reconciliation contention contract lives in [`bin/fm-procevent.sh`](../bin/fm-procevent.sh).
+The drain presents worker outcomes through the [status-presentation contract](architecture.md#event-driven-supervision); routine working lines remain silent.
 
 ## Regression coverage
 
