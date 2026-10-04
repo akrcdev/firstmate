@@ -97,7 +97,7 @@ The default 300-second grace is unchanged.
 Only the watcher process touches `state/.last-watcher-beat`; no helper process can make a wedged watcher appear healthy.
 Pi's active generation observes that shared identity/beacon predicate while idle, reports unconfirmed health rather than trusting an occupied arm child, and requests a new main drain when worker status changes during an outage.
 The optional process-event reconciliation contention contract lives in [`bin/fm-procevent.sh`](../bin/fm-procevent.sh).
-The drain presents worker outcomes through the [status-presentation contract](architecture.md#event-driven-supervision); routine working lines remain silent.
+The drain presents worker outcomes through the [status-presentation contract](architecture.md#event-driven-supervision); routine working lines remain silent on an empty-queue drain.
 
 ## Regression coverage
 
