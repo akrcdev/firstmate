@@ -730,6 +730,32 @@ test_self_announced_close_does_not_rewake_but_next_note_does() {
 
 # --- actionable wakes are surfaced (queue + exit) ---------------------------
 
+test_worker_signal_survives_source_lock_contention() {
+  local dir state fakebin pid claims kind
+  for kind in blocked 'done'; do
+    dir=$(make_case "source-contention-$kind"); state="$dir/state"; fakebin="$dir/fakebin"
+    claims="$dir/claims"
+    chmod 0700 "$state"
+    mkdir -p "$state/procevent" "$claims/contested.lock"
+    printf '%s\n' "$$" > "$claims/contested.lock/pid"
+    printf '%s\n%s\nlegacy\nwrong-identity\n' "$dir" "$$" > "$claims/contested.claim"
+    printf '%s: synthetic worker outcome\n' "$kind" > "$state/task.status"
+    watch_bg "$state" "$fakebin" "$dir/watch.out" env FM_HOME="$dir" FM_PROCEVENT_CLAIM_ROOT="$claims"
+    pid=$!
+    if ! wait_for_exit "$pid" 150; then
+      rm -rf "$claims/contested.lock"
+      kill "$pid" 2>/dev/null || true
+      wait "$pid" 2>/dev/null || true
+      fail "contended optional source hid $kind worker"
+    fi
+    grep -F "signal: $state/task.status" "$dir/watch.out" >/dev/null || fail "missing $kind signal"
+    grep -F 'task.status' "$state/.wake-queue" >/dev/null || fail "missing durable $kind event"
+    [ "$(cat "$claims/contested.lock/pid")" = "$$" ] || fail 'reconcile reclaimed a live legacy lock'
+    kill -0 "$$" || fail 'unrelated lock holder was signalled'
+  done
+  pass 'real watcher delivers blockers and completions despite optional source lock contention'
+}
+
 test_actionable_signal_surfaced() {
   local dir state fakebin out drain_out status_file pid
   dir=$(make_case actionable-signal); state="$dir/state"; fakebin="$dir/fakebin"
@@ -2835,6 +2861,7 @@ test_working_note_not_working_surfaced
 test_secondmate_status_note_surfaced_despite_busy_agent
 test_self_announced_close_does_not_rewake_but_next_note_does
 test_actionable_signal_surfaced
+test_worker_signal_survives_source_lock_contention
 test_terminal_stale_surfaced
 test_stale_terminal_status_overridden_by_active_run
 test_nonterminal_stale_provably_working_absorbed_then_escalated

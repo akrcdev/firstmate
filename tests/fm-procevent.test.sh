@@ -150,6 +150,63 @@ sup=$(PATH="${FM_TEST_BASE_PATH:-/usr/bin:/bin:/usr/sbin:/sbin}" bash -c \
   '. "$1/bin/fm-supervision-lib.sh"; fm_supervision_needed "$2" && echo yes || echo no' _ "$ROOT" "$IDLE/state")
 assert_contains "$sup" no "an unconfigured home does not need supervision"
 
+# --- optional reconciliation never waits for a live source lock -------------
+HCONTENDED="$TMP_ROOT/contended"; new_home "$HCONTENDED"
+pe_register "$HCONTENDED" lavish contested -- "$BLOCKER" "$TMP_ROOT/contested-trigger" fixture >/dev/null
+mkdir -p "$HCONTENDED/state/procevent-inbox" "$FM_PROCEVENT_CLAIM_ROOT/contested.lock"
+printf '%s\n' "$$" > "$FM_PROCEVENT_CLAIM_ROOT/contested.lock/pid"
+printf '%s\n%s\nlegacy\nwrong-identity\n' "$HCONTENDED" "$$" > "$FM_PROCEVENT_CLAIM_ROOT/contested.claim"
+for source in contested independent; do
+  printf 'captured fixture result\n' > "$HCONTENDED/state/procevent-inbox/$source.1.result"
+  printf 'lavish\n' > "$HCONTENDED/state/procevent-inbox/$source.1.adapter"
+  chmod 0600 "$HCONTENDED/state/procevent-inbox/$source.1."*
+done
+pe "$HCONTENDED" reconcile > "$TMP_ROOT/contended.out" &
+contended_pid=$!
+for ((i=0; i<150; i++)); do
+  kill -0 "$contended_pid" 2>/dev/null || break
+  sleep 0.1
+done
+if kill -0 "$contended_pid" 2>/dev/null; then
+  # Release only the fixture lock before failing, so teardown cannot deadlock.
+  rm -rf "$FM_PROCEVENT_CLAIM_ROOT/contested.lock"
+  : > "$TMP_ROOT/contested-trigger"
+  wait "$contended_pid" 2>/dev/null || true
+  fail "reconcile waited behind a live legacy source lock"
+fi
+wait "$contended_pid" || fail "contended reconcile failed"
+legacy_owner=$(cat "$FM_PROCEVENT_CLAIM_ROOT/contested.lock/pid")
+rm -rf "$FM_PROCEVENT_CLAIM_ROOT/contested.lock"
+assert_contains "$(cat "$TMP_ROOT/contended.out")" 'published=1 started=0' 'independent capture publishes despite contention'
+assert_contains "$(wake_payloads "$HCONTENDED")" 'independent 1' 'independent event remains deliverable'
+assert_not_contains "$(wake_payloads "$HCONTENDED")" 'contested 1' 'contended result is not mutated without its lock'
+[ "$legacy_owner" = "$$" ] || fail 'legacy lock was reclaimed'
+[ -f "$HCONTENDED/state/procevent/contested.source" ] || fail 'contended registration was removed'
+[ -f "$HCONTENDED/state/procevent-inbox/contested.1.result" ] || fail 'contended result was lost'
+kill -0 "$$" || fail 'unrelated lock pid was signalled'
+rm -f "$FM_PROCEVENT_CLAIM_ROOT/contested.claim"
+# The same deferral must hold for a legitimate lock, not just a legacy fixture.
+hold_source_lock contested "$TMP_ROOT/held.ready" "$TMP_ROOT/held.release"
+wait_for "$TMP_ROOT/held.ready" || fail 'fixture source lock was not acquired'
+pe "$HCONTENDED" reconcile > "$TMP_ROOT/genuine-contended.out" &
+contended_pid=$!
+for ((i=0; i<150; i++)); do
+  kill -0 "$contended_pid" 2>/dev/null || break
+  sleep 0.1
+done
+genuine_timed_out=0
+kill -0 "$contended_pid" 2>/dev/null && genuine_timed_out=1
+: > "$TMP_ROOT/held.release"
+wait "$HOLDER_PID" || fail 'fixture lock holder failed'
+wait "$contended_pid" || fail 'genuinely contended reconcile failed'
+[ "$genuine_timed_out" = 0 ] || fail 'reconcile waited for a genuine source lock'
+assert_contains "$(cat "$TMP_ROOT/genuine-contended.out")" 'started=0' 'genuinely contended source is deferred'
+: > "$TMP_ROOT/contested-trigger"
+pe "$HCONTENDED" reconcile >/dev/null
+assert_contains "$(wake_payloads "$HCONTENDED")" 'contested 1' 'deferred capture publishes after release'
+pe "$HCONTENDED" retire contested >/dev/null || fail 'could not retire the fixture source'
+pass 'reconcile defers legacy and genuine contention without losing captures or starving independent sources'
+
 # --- a blocking source completes into exactly one normalized event ----------
 H1="$TMP_ROOT/h1"; new_home "$H1"
 TRIG="$TMP_ROOT/trigger-one"

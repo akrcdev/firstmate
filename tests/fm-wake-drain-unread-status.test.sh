@@ -273,7 +273,7 @@ test_empty_queue_does_not_swallow_later_signal_annotation() {
   state="$dir/state"
   out="$dir/drain.out"
   status="$state/task-delayed.status"
-  printf 'done: shipped before watcher published signal\n' > "$status"
+  printf 'working: progressing before watcher published signal\n' > "$status"
 
   FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" \
     || fail "empty-queue drain failed before delayed signal publication"
@@ -283,7 +283,7 @@ test_empty_queue_does_not_swallow_later_signal_annotation() {
     || fail "publishing the delayed status signal failed"
   FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" \
     || fail "drain failed after delayed signal publication"
-  grep -F 'latest wake-EVENT observed at drain, not current state: task-delayed.status: done: shipped before watcher published signal' "$out" >/dev/null \
+  grep -F 'latest wake-EVENT observed at drain, not current state: task-delayed.status: working: progressing before watcher published signal' "$out" >/dev/null \
     || fail "the empty-queue drain acknowledged an event before its signal annotation: $(cat "$out")"
   pass "an empty-queue drain preserves routine status for a later signal annotation"
 }
@@ -294,20 +294,39 @@ test_routine_working_lines_stay_silent_on_the_empty_queue() {
   state="$dir/state"
   out="$dir/drain.out"
   printf 'working: on it\n' > "$state/task7.status"
-  printf 'done: shipped clean\n' > "$state/task8.status"
 
-  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" || fail "drain failed with only routine working/done lines"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" || fail "drain failed with only routine working lines"
 
   if grep -F 'UNREAD STATUS' "$out" >/dev/null; then
-    fail "routine working/done lines printed an UNREAD STATUS section: $(cat "$out")"
+    fail "routine working lines printed an UNREAD STATUS section: $(cat "$out")"
   fi
   if grep -F 'OPEN DECISIONS' "$out" >/dev/null; then
-    fail "routine working/done lines printed OPEN DECISIONS: $(cat "$out")"
+    fail "routine working lines printed OPEN DECISIONS: $(cat "$out")"
   fi
   [ ! -s "$out" ] || fail "the empty-queue routine case was not silent: $(cat "$out")"
-  pass "routine working/done lines still print nothing on an empty-queue drain"
+  pass "routine working lines still print nothing on an empty-queue drain"
 }
 
+test_terminal_outcomes_surface_once_without_watcher_signal() {
+  local dir state out verb
+  dir=$(make_case empty-queue-outcomes); state="$dir/state"; out="$dir/drain.out"
+  for verb in 'done' failed; do
+    printf '%s: unreported worker outcome\nworking: later routine line\n' "$verb" > "$state/$verb.status"
+  done
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" || fail 'outcome backstop drain failed'
+  for verb in 'done' failed; do
+    grep -F "$verb $verb: unreported worker outcome" "$out" >/dev/null \
+      || fail "buried $verb outcome was lost without a queued signal"
+  done
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" || fail 'second outcome drain failed'
+  [ ! -s "$out" ] || fail "already-presented outcomes replayed: $(cat "$out")"
+  printf 'done: a later completion\n' >> "$state/done.status"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" || fail 'later outcome drain failed'
+  grep -F 'done done: a later completion' "$out" >/dev/null || fail 'later completion was swallowed'
+  pass 'completion and failure surface once without a watcher signal, including buried and later outcomes'
+}
+
+test_terminal_outcomes_surface_once_without_watcher_signal
 test_incident_note_answer_buried_under_routine_note_surfaces_both
 test_already_presented_notes_are_not_replayed
 test_brand_new_note_after_presentation_is_surfaced
