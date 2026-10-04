@@ -18,7 +18,7 @@ stop_fixture_worker() {
   fi
   # TERM starts asynchronous shutdown, which still writes under worker.lock.
   # The worker releases that lock only after stopping its command tree.
-  for i in $(seq 1 200); do
+  for ((i = 0; i < 200; i++)); do
     if [ ! -e "$TMP_ROOT/remote-jobs/worker.pid" ] && [ ! -e "$TMP_ROOT/remote-jobs/worker.lock" ]; then
       return 0
     fi
