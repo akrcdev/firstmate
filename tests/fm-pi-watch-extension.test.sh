@@ -11,6 +11,8 @@ EXT="$ROOT/.pi/extensions/fm-primary-pi-watch.ts"
 # from a clean checkout with no tracked .opencode/package.json. The warning is
 # unrelated to plugin output, which the assertions intentionally require empty.
 export NODE_NO_WARNINGS=1
+# Other fixtures exercise close/retry timers, not the idle-health cadence.
+export FM_PI_WATCH_HEALTH_POLL_MS=3600000
 
 # One owner for the readiness budget every unready-successor test below spends
 # on purpose. Both plugins start a successor arm through a login shell and
@@ -250,14 +252,11 @@ if (!initial.content[0]?.text.includes("started Pi extension arm child")) {
   throw new Error(`initial call did not start the arm child: ${initial.content[0]?.text}`);
 }
 const redundant = await tool.execute("tool-call-redundant", {}, undefined, undefined, {});
-if (!redundant.content[0]?.text.includes("Pi extension already owns an arm child; no manual re-arm needed")) {
-  throw new Error(`redundant call omitted ownership-based no-op guidance: ${redundant.content[0]?.text}`);
+if (redundant.details.ok || !redundant.content[0]?.text.includes("unconfirmed")) {
+  throw new Error(`unready child was mistaken for health: ${redundant.content[0]?.text}`);
 }
 if (/^watcher: healthy\b/.test(redundant.content[0]?.text)) {
   throw new Error(`redundant call overclaimed independent health: ${redundant.content[0]?.text}`);
-}
-if (!redundant.content[0]?.text.includes("only after a later notification says the cycle is missing, failed, or unhealthy")) {
-  throw new Error(`redundant call omitted the repair-only condition: ${redundant.content[0]?.text}`);
 }
 for (let i = 0; i < 100 && !existsSync(process.env.FM_ARM_LOG); i += 1) {
   await new Promise((resolve) => setTimeout(resolve, 10));
@@ -270,9 +269,9 @@ writeFileSync(process.env.FM_STOP_FILE, "stop\n");
 EOF
 )
   status=$?
-  expect_code 0 "$status" "Pi redundant tool call must remain an ownership-based no-op with repair-only guidance"
+  expect_code 0 "$status" "Pi redundant tool call must not claim health or duplicate an unready child"
   [ -z "$out" ] || fail "Pi redundant-call test printed output: $out"
-  pass "Pi redundant tool call returns ownership guidance and spawns no second child"
+  pass "Pi redundant tool call reports unconfirmed health and spawns no second child"
 }
 
 test_pi_scheduled_retry_call_is_owned_noop() {
@@ -1688,8 +1687,8 @@ if (liveArmPids().length !== 1 || liveArmPids()[0] !== activeChild) {
   throw new Error(`stale callback mutated live arm set: ${liveArmPids().join(",")}`);
 }
 const redundant = await current.getTool().execute("redundant", {}, undefined, undefined, {});
-if (!redundant.details?.ok || !String(redundant.details.message).includes("unchanged")) {
-  throw new Error(`active generation lost single-flight ownership: ${JSON.stringify(redundant.details)}`);
+if (redundant.details?.ok) {
+  throw new Error(`active generation claimed health without a fixture beacon: ${JSON.stringify(redundant.details)}`);
 }
 
 // Repeated transitions keep exactly one live cycle and never revive the refusal.
@@ -2804,6 +2803,135 @@ EOF
   pass "OpenCode healthy arm output does not suppress the turn-end guard"
 }
 
+test_pi_idle_health() {
+  local mode=$1 repo="$TMP_ROOT/health-$1" out status
+  mkdir -p "$repo/bin" "$repo/state" "$repo/config"
+  install_pi_watch_extension_fixture "$repo"
+  cp "$ROOT/bin/fm-wake-lib.sh" "$repo/bin/" || fail 'could not install the watcher health fixture'
+  # A bounded fixture descendant deliberately outlives its diagnostic shell.
+  cat >> "$repo/bin/fm-wake-lib.sh" <<'SH'
+if [ -e "$STATE/probe-hang" ]; then
+  fm_watcher_healthy() { touch "$STATE/probe-entered"; sleep 2; }
+fi
+SH
+  cat > "$repo/bin/fm-watch-arm.sh" <<'SH'
+#!/usr/bin/env bash
+[ "$FM_HEALTH_CASE" != cannot-start ] || exit 1
+. "$FM_ROOT_OVERRIDE/bin/fm-wake-lib.sh"
+mkdir -p "$STATE/.watch.lock"
+printf '%s\n' "$$" > "$STATE/.watch.lock/pid"
+printf '%s\n' "$FM_HOME" > "$STATE/.watch.lock/fm-home"
+printf '%s/bin/fm-watch.sh\n' "$FM_ROOT_OVERRIDE" > "$STATE/.watch.lock/watcher-path"
+fm_pid_identity "$$" > "$STATE/.watch.lock/pid-identity"
+touch "$STATE/.last-watcher-beat"
+printf 'watcher: started pid=%s (beacon fresh)\n' "$$"
+trap 'exit 0' TERM INT
+while :; do
+  [ ! -e "$STATE/recover" ] || touch "$STATE/.last-watcher-beat"
+  sleep 0.1
+done
+SH
+  chmod +x "$repo/bin/fm-watch-arm.sh"
+  out=$(FM_HEALTH_CASE="$mode" PLUGIN="$repo/.pi/extensions/fm-primary-pi-watch.ts" \
+    FM_HOME="$repo" FM_ROOT_OVERRIDE="$repo" FM_PI_WATCH_HEALTH_POLL_MS=100 \
+    FM_GUARD_GRACE=3 FM_PI_ARM_READY_TIMEOUT_MS="$ARM_READY_TIMEOUT_MS" FM_PI_WATCH_HEALTH_PROBE_TIMEOUT_MS=250 \
+    FM_WATCH_REARM_RETRY_BASE_MS=10 FM_WATCH_REARM_RETRY_MAX_MS=10 FM_WATCH_REARM_RETRY_LIMIT=1 \
+    node --input-type=module 2>&1 <<'JS'
+import { readFileSync, writeFileSync, existsSync, unlinkSync, utimesSync } from 'node:fs';
+import { pathToFileURL } from 'node:url';
+const handlers = {}, messages = [];
+let tool, rejectedOnce = false;
+const state = `${process.env.FM_HOME}/state`;
+const wait = ms => new Promise(r => setTimeout(r, ms));
+async function until(f, label) {
+  for (let i = 0; i < 300; i++) { if (f()) return; await wait(50); }
+  throw new Error(label);
+}
+const pi = {
+  on(name, fn) { handlers[name] = fn; }, registerCommand() {},
+  registerTool(t) { tool = t; },
+  sendUserMessage: async text => {
+    if (!rejectedOnce) { rejectedOnce = true; throw new Error('synthetic delivery refusal'); }
+    messages.push(text);
+  },
+};
+writeFileSync(`${state}/.lock`, `${process.pid}\n`);
+(await import(pathToFileURL(process.env.PLUGIN).href)).default(pi);
+try {
+  await handlers.session_start({});
+  await tool.execute();
+  if (process.env.FM_HEALTH_CASE !== 'cannot-start') {
+    await until(() => existsSync(`${state}/.last-watcher-beat`), 'first beacon absent');
+    await wait(100);
+    const healthy = await tool.execute();
+    if (!healthy.details.ok) throw new Error(`fresh identity-matched cycle rejected: ${JSON.stringify(healthy)}`);
+  }
+  await until(() => messages.length > 0, 'idle main never received outage alarm');
+  if (!messages[0].startsWith('\u2063FIRSTMATE_OP: v1 watcher: ')) throw new Error('untyped alarm');
+  if (process.env.FM_HEALTH_CASE !== 'cannot-start') {
+    const repair = await tool.execute();
+    if (repair.details.ok || !repair.content[0].text.includes('FAILED')) throw new Error('stalled child reported healthy');
+    process.kill(Number(readFileSync(`${state}/.watch.lock/pid`, 'utf8')), 0);
+  }
+  await wait(500);
+  const alarms = messages.length;
+  await wait(500);
+  if (messages.length !== alarms) throw new Error('unchanged outage flooded main');
+  writeFileSync(`${state}/later.status`, 'blocked: [key=access] synthetic login required\nworking: unrelated progress\n');
+  await until(() => messages.length > alarms, 'new blocker after outage alarm was suppressed');
+  if (!messages.at(-1).includes('Worker status changed')) throw new Error('not the status-change path');
+  if (!readFileSync(`${state}/later.status`, 'utf8').includes('[key=access]')) throw new Error('status consumed');
+  const n = messages.length;
+  writeFileSync(`${state}/finished.status`, 'done: synthetic completion\n');
+  await until(() => messages.length > n, 'finished worker during outage suppressed');
+  if (process.env.FM_HEALTH_CASE !== 'cannot-start') {
+    writeFileSync(`${state}/recover`, 'resume progress\n');
+    await wait(500);
+    if (!(await tool.execute()).details.ok) throw new Error('progress did not restore healthy repair verdict');
+    unlinkSync(`${state}/recover`);
+    await wait(200);
+    const beforeRecurrence = messages.length;
+    utimesSync(`${state}/.last-watcher-beat`, new Date(0), new Date(0));
+    await until(() => messages.length > beforeRecurrence, 'new outage after recovery was deduplicated');
+    writeFileSync(`${state}/probe-hang`, 'bound the probe, not the watcher\n');
+    const probeStart = Date.now();
+    const probe = await tool.execute();
+    if (Date.now() - probeStart > 1500 || !probe.content[0].text.includes('bounded probe')) {
+      throw new Error(`probe descendant delayed the repair verdict: ${JSON.stringify(probe)}`);
+    }
+    if (!existsSync(`${state}/probe-entered`)) throw new Error('hanging health probe was not exercised');
+    unlinkSync(`${state}/probe-hang`);
+  }
+  writeFileSync(`${state}/.lock`, '1\n');
+  await wait(300);
+  const before = messages.length;
+  writeFileSync(`${state}/foreign.status`, 'blocked: foreign ownership\n');
+  await wait(400);
+  if (messages.length !== before) throw new Error('alarm after lock loss');
+  if (process.env.FM_HEALTH_CASE !== 'cannot-start') {
+    writeFileSync(`${state}/.lock`, `${process.pid}\n`);
+    if ((await tool.execute()).details.ok) throw new Error('reclaimed session reported a stalled child healthy');
+    const resumed = messages.length;
+    writeFileSync(`${state}/resumed.status`, 'done: after ownership returned\n');
+    await until(() => messages.length > resumed, 'repair did not resume observation after ownership returned');
+  }
+} finally {
+  await handlers.session_shutdown({ reason: 'quit' });
+}
+const n = messages.length;
+writeFileSync(`${state}/after-quit.status`, 'done: no late callback\n');
+await wait(300);
+if (messages.length !== n) throw new Error('late callback after shutdown');
+JS
+)
+  status=$?
+  expect_code 0 "$status" "Pi idle $mode health, later status and recovery: $out"
+  [ -z "$out" ] || fail "Pi idle-health test printed output: $out"
+  pass "Pi idle $mode health detects outage, retries rejected delivery and surfaces later worker outcomes"
+}
+
+test_pi_idle_health stalled
+test_pi_idle_health cannot-start
 test_pi_extension_reports_external_healthy_watcher
 test_pi_tool_returns_agent_tool_result
 test_pi_redundant_tool_call_is_owned_noop

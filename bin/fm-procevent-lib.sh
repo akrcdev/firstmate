@@ -89,6 +89,18 @@ fm_procevent_source_lock_acquire() {
   fm_lock_acquire_wait "$(fm_procevent_source_lock_path "$id")"
 }
 
+# Optional watcher reconciliation defers contended sources; explicit mutations
+# retain the waiting lock above. Never reclaim a live legacy owner to make a
+# status scan progress.
+fm_procevent_source_lock_try_acquire() {
+  local id=$1 root
+  fm_procevent_source_id_valid "$id" || return 1
+  root=$(fm_procevent_claim_root)
+  (umask 077; mkdir -p "$root") || return 1
+  [ -d "$root" ] && [ ! -L "$root" ] || return 1
+  fm_lock_try_acquire "$(fm_procevent_source_lock_path "$id")"
+}
+
 fm_procevent_source_lock_release() {
   fm_lock_release "$(fm_procevent_source_lock_path "$1")"
 }

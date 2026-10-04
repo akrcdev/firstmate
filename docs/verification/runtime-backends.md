@@ -943,6 +943,34 @@ Refresh this harness-dependent proof before accepting a cursor upgrade:
 FM_HARNESS_LIVENESS_DRIFT=1 bin/fm-test-run.sh tests/fm-harness-liveness-drift-live-e2e.test.sh
 ```
 
+## Pi idle worker notifications
+
+Verified on 2026-10-04 on Linux with Pi SDK 0.84.1 and Node 24.18.1:
+
+```sh
+FM_PI_LIVE_E2E=1 FM_PI_LIVE_SYNTHETIC_ONLY=1 \
+  FM_PI_PACKAGE_DIR="$installed_pi_package" \
+  bash bin/fm-test-run.sh tests/fm-pi-primary-live-e2e.test.sh
+```
+
+`FM_PI_PACKAGE_DIR` selects the installed package directory when it is not under npm's global root.
+The real SDK loads the tracked extension, delivers notifications to an otherwise idle session, executes the real drain and any required acknowledgement, and persists a substantive assistant final.
+A local deterministic provider supplies tool choices without external requests or operator credentials; this proves SDK delivery and record consumption, not model judgment or physical TUI rendering.
+Observed output:
+
+```text
+ok - real Pi done: idle notification, real drain, persisted substantive final (3458ms)
+ok - real Pi blocked: idle notification, real drain, persisted substantive final (2805ms)
+ok - real Pi contended: idle notification, real drain, persisted substantive final (3708ms)
+ok - real Pi hang: idle notification, real drain, persisted substantive final (702ms)
+ok - real Pi cannot-start: idle notification, real drain, persisted substantive final (702ms)
+```
+
+The hang and cannot-start cases publish another worker outcome after the initial outage final, proving that alarm suppression does not hide later work.
+`tests/fm-pi-watch-extension.test.sh` separately exercises rejected delivery, bounded probe descendants, restored health, ownership loss/recovery, and shutdown; source-lock and unread-status regressions cover the shared shell path independently of Pi or a worker backend.
+The modified watcher extension passes strict no-emit compilation against this SDK.
+The full `tests/fm-pi-primary-types.test.sh` currently fails at the unchanged `fm-calm.ts` terminal-input handler with TS2345 against Pi 0.84.1; the same failure was reproduced on the unmodified project base and is not reported as a passing full-extension check.
+
 ## Pi supervision branch
 
 The supervision-branch extension (`.pi/extensions/fm-branch-supervision.ts`, [docs/pi-supervision-branch.md](../pi-supervision-branch.md)) builds its persistent second session through the Pi SDK surface: `createAgentSession` (including its `model`, `modelRuntime`, and `thinkingLevel` options), `DefaultResourceLoader` with `extensionFactories`, `SessionManager`, `createBashToolDefinition` with a `spawnHook`, `sendCustomMessage`, the `before_provider_request` hook, the command context's model registry for picker candidates, a fresh `ModelRuntime` for isolated-branch resolution, and Pi's own `getSupportedThinkingLevels`/`clampThinkingLevel` plus its `getThinkingLevel` and `thinking_level_select` extension surface for effort.

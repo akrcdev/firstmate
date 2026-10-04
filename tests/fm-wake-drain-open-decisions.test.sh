@@ -102,7 +102,7 @@ test_later_unrelated_terminal_line_does_not_close_it() {
   pass "a later unrelated terminal line never clears an open decision"
 }
 
-test_no_open_decisions_prints_nothing() {
+test_no_open_decisions_preserves_unread_outcomes() {
   local dir state out
   dir=$(make_case none-open)
   state="$dir/state"
@@ -115,8 +115,11 @@ test_no_open_decisions_prints_nothing() {
   if grep -F 'OPEN DECISIONS' "$out" >/dev/null; then
     fail "the empty case printed an OPEN DECISIONS section: $(cat "$out")"
   fi
-  [ ! -s "$out" ] || fail "the empty case with no queued wakes was not silent: $(cat "$out")"
-  pass "no open decisions across the fleet prints nothing"
+  grep -Fx 'task5 done: shipped clean' "$out" >/dev/null \
+    || fail "an unread completion was lost when there were no open decisions"
+  FM_STATE_OVERRIDE="$state" "$DRAIN" > "$out" || fail "repeat drain failed with no open decisions"
+  [ ! -s "$out" ] || fail "the already-presented outcome was not silent on repeat drain: $(cat "$out")"
+  pass "no open decisions omits the section while an unread outcome is presented once"
 }
 
 test_open_decision_surfaces_even_with_an_unrelated_queued_wake() {
@@ -220,7 +223,7 @@ test_over_long_decision_note_is_capped_with_a_marker
 test_explicit_resolution_closes_it
 test_later_unrelated_terminal_line_does_not_close_it
 test_reserved_key_namespace_is_owned_by_its_library
-test_no_open_decisions_prints_nothing
+test_no_open_decisions_preserves_unread_outcomes
 test_open_decision_surfaces_even_with_an_unrelated_queued_wake
 test_buried_decision_surfaces_on_the_empty_queue_fast_path
 test_status_symlink_is_not_followed

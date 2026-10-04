@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Present durable watcher wake records, optionally acknowledge handled records,
 # annotate every unread line for validated signal status keys, surface unread
-# informational status lines, OPEN DECISIONS, and captain-call record
+# worker outcomes, notes and replies, OPEN DECISIONS, and captain-call record
 # divergence, then assert liveness.
 #
 # Keep sequence-bound row consumption independent from generation-bound episode
@@ -195,10 +195,10 @@ acknowledge_inactive_outcomes() { # <mode> <newline-separated-fingerprints>
   done <<< "$fingerprints"
 }
 
-# Print still-unread informational status lines (note: answers and pending-reply
-# resolutions) that the OPEN DECISIONS fold never carries. Uses the same
+# Print still-unread worker outcomes, notes and pending-reply resolutions that
+# the OPEN DECISIONS fold never carries. Uses the same
 # cursor-backed unread span as the annotation path, and runs on every drain -
-# including the empty-queue fast path - so a buried answer cannot be swallowed
+# including the empty-queue fast path - so a buried answer or outcome is not lost
 # when the fold later advances the cursor. Prints nothing when nothing is
 # unread, which is the common case.
 print_unread_status_section() {

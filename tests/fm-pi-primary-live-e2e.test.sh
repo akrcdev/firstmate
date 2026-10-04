@@ -18,6 +18,22 @@ fail() {
 }
 
 command -v pi >/dev/null 2>&1 || fail "pi not found"
+# Token-free real-SDK delivery proof. The controlled provider cannot contact an
+# external service or read operator authentication; ordinary TUI mode is intact.
+if [ "${FM_PI_LIVE_SYNTHETIC_ONLY:-0}" = 1 ]; then
+  # shellcheck source=tests/lib.sh
+  . "$ROOT/tests/lib.sh"
+  command -v node >/dev/null 2>&1 || fail "node not found"
+  PI_PACKAGE_DIR=${FM_PI_PACKAGE_DIR:-"$(npm root -g)/@earendil-works/pi-coding-agent"}
+  [ -f "$PI_PACKAGE_DIR/package.json" ] || fail "installed Pi SDK absent at $PI_PACKAGE_DIR"
+  SYNTHETIC_LAB=$(fm_test_tmproot fm-pi-health-live)
+  for scenario in 'done' blocked contended hang cannot-start; do
+    NODE_NO_WARNINGS=1 node "$ROOT/tests/fixtures/pi-watch-health-live.mjs" \
+      "$ROOT" "$SYNTHETIC_LAB/$scenario" "$PI_PACKAGE_DIR" "$scenario" \
+      || fail "real Pi $(pi --version) synthetic $scenario delivery failed"
+  done
+  exit 0
+fi
 command -v tmux >/dev/null 2>&1 || fail "tmux not found"
 
 TMUX=$(command -v tmux)

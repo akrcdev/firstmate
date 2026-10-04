@@ -8,9 +8,12 @@
 // a new live generation so monitoring can arm again without restarting Pi. Terminal
 // quit leaves the final generation stopped so late callbacks cannot rearm. Stale
 // callbacks from a prior generation are no-ops against the active replacement.
-import { spawn, spawnSync, type ChildProcess } from "node:child_process";
+// The active generation also observes idle cycle health through the existing
+// identity/beacon predicate. Observation never starts a second cycle or consumes
+// events; changed status fingerprints during an outage request another main drain.
+import { execFile, spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent";
@@ -56,6 +59,9 @@ type SessionGeneration = {
   stopping: boolean;
   child: ChildProcess | null;
   retryTimer: ReturnType<typeof setTimeout> | null;
+  healthTimer: ReturnType<typeof setTimeout> | null;
+  healthAlarm: string | null;
+  healthSince: number;
   retryFailures: number;
   restoring: boolean;
   seq: number;
@@ -101,12 +107,17 @@ const armReadyTimeoutMs = positiveInteger(
   process.platform === "win32" ? 35000 : 12000,
 );
 const armRetireTimeoutMs = positiveInteger("FM_WATCH_ARM_RETIRE_TIMEOUT_MS", 1000);
+// The shell library owns identity and grace; these bound observation only.
+const healthPollMs = positiveInteger("FM_PI_WATCH_HEALTH_POLL_MS", 15000);
+const healthProbeTimeoutMs = positiveInteger("FM_PI_WATCH_HEALTH_PROBE_TIMEOUT_MS", 5000);
 const repairOnlyHint = "call fm_watch_arm_pi again only after a later notification says the cycle is missing, failed, or unhealthy";
 const shuttingDownMessage = "watcher: not armed - Pi session is shutting down";
 
 let nextGenerationId = 0;
 let activeGeneration: SessionGeneration | null = null;
 const armReadiness = new WeakMap<ChildProcess, Promise<boolean>>();
+const armStartedAt = new WeakMap<ChildProcess, number>();
+const armEstablished = new WeakSet<ChildProcess>();
 const armClose = new WeakMap<ChildProcess, Promise<void>>();
 const armRecovery = new WeakMap<ChildProcess, { generation: string; watcherPid: string }>();
 
@@ -196,6 +207,9 @@ function createGeneration(): SessionGeneration {
     stopping: false,
     child: null,
     retryTimer: null,
+    healthTimer: null,
+    healthAlarm: null,
+    healthSince: Date.now(),
     retryFailures: 0,
     restoring: false,
     seq: 0,
@@ -213,6 +227,8 @@ function generationIsLive(generation: SessionGeneration): boolean {
 function stopGeneration(generation: SessionGeneration): void {
   generation.stopping = true;
   if (generation.retryTimer) clearTimeout(generation.retryTimer);
+  if (generation.healthTimer) clearTimeout(generation.healthTimer);
+  generation.healthTimer = null;
   generation.retryTimer = null;
   if (generation.child) generation.child.kill("SIGTERM");
   generation.child = null;
@@ -246,13 +262,14 @@ export default function (pi: ExtensionAPI) {
   async function sendWake(
     owner: SessionGeneration,
     message: string,
-  ): Promise<void> {
-    if (!generationIsLive(owner)) return;
+  ): Promise<boolean> {
+    if (!generationIsLive(owner)) return false;
     const content = encodeFirstmateOperationalInput(
       "watcher",
       `FIRSTMATE WATCHER WAKE: ${message}\n\nRun bin/fm-wake-drain.sh first and handle the queued wake. Watcher continuity is extension-owned.`,
     );
     await pi.sendUserMessage(content, { deliverAs: "followUp" });
+    return generationIsLive(owner);
   }
 
   function confirmHandlingDelivery(recovery: { generation: string; watcherPid: string }): {
@@ -339,7 +356,10 @@ export default function (pi: ExtensionAPI) {
   }
 
   function surfaceFailure(owner: SessionGeneration, message: string): void {
-    void sendWake(owner, message).catch(() => {
+    const snapshot = statusFingerprint();
+    void sendWake(owner, message).then((delivered) => {
+      if (delivered) owner.healthAlarm = snapshot;
+    }).catch(() => {
       // Pi owns delivery errors; continuity restoration never waits on prompting.
     });
   }
@@ -438,6 +458,102 @@ export default function (pi: ExtensionAPI) {
     owner.retryTimer = timer;
   }
 
+  // These fingerprints request a drain, never acknowledge status or queue rows.
+  function statusFingerprint(): string {
+    try {
+      const hash = createHash("sha256");
+      for (const entry of readdirSync(state, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+        if (!entry.isFile() || !entry.name.endsWith(".status")) continue;
+        const info = lstatSync(`${state}/${entry.name}`);
+        if (!info.isFile()) continue;
+        hash.update(`${entry.name}:${info.ino}:${info.size}:${info.mtimeMs}:${info.ctimeMs}\n`);
+      }
+      return hash.digest("hex");
+    } catch {
+      // Do not flood main for one read failure; a readable snapshot earns a drain.
+      return "unreadable";
+    }
+  }
+
+  async function cycleHealth(owner: SessionGeneration): Promise<string> {
+    const child = owner.child;
+    if (!child || !armEstablished.has(child)) {
+      const since = child ? armStartedAt.get(child) ?? owner.healthSince : owner.healthSince;
+      if ((child || owner.healthAlarm === null) && Date.now() - since < armReadyTimeoutMs) return "starting";
+      return "watcher: FAILED - Pi extension has no confirmed ready watcher cycle";
+    }
+    return await new Promise<string>((resolveHealth) => {
+      const unavailable = "watcher: FAILED - Pi extension could not inspect cycle health within its bounded probe";
+      // Resolve even if a probe descendant keeps stdout open after its shell
+      // exits. execFile also terminates only our diagnostic child on timeout.
+      const deadline = setTimeout(() => resolveHealth(unavailable), healthProbeTimeoutMs);
+      deadline.unref();
+      execFile("bash", ["-c", `
+        . "$1/bin/fm-wake-lib.sh" || exit 1
+        if fm_watcher_healthy "$2" "$1/bin/fm-watch.sh" "\${FM_GUARD_GRACE:-300}" "$3"; then
+          printf 'healthy'
+        else
+          age=$(fm_path_age "$2/.last-watcher-beat")
+          printf 'watcher: FAILED - cycle health unconfirmed (beacon %ss); a slow cycle may still recover' "$age"
+        fi`, "fm-pi-watch-health", fmRoot, state, fmHome], {
+        cwd: fmRoot,
+        env: { ...process.env, FM_HOME: fmHome, FM_STATE_OVERRIDE: state, FM_ROOT_OVERRIDE: fmRoot },
+        timeout: healthProbeTimeoutMs,
+        killSignal: "SIGKILL",
+        maxBuffer: 4096,
+      }, (error, stdout) => {
+        clearTimeout(deadline);
+        resolveHealth(error || !stdout.trim() ? unavailable : stdout.trim());
+      });
+    });
+  }
+
+  function observeHealth(owner: SessionGeneration): void {
+    if (!generationIsLive(owner) || owner.healthTimer) return;
+    const timer = setTimeout(async () => {
+      if (owner.healthTimer !== timer) return;
+      // Keep the slot while awaiting I/O so tool calls cannot add another loop.
+      try {
+        if (!generationIsLive(owner) || lockOwnership() !== "owned") return;
+        const child = owner.child;
+        const health = await cycleHealth(owner);
+        if (!generationIsLive(owner) || lockOwnership() !== "owned" || owner.child !== child) return;
+        if (health === "healthy") {
+          owner.healthAlarm = null;
+        } else if (health !== "starting") {
+          const snapshot = statusFingerprint();
+          if (owner.healthAlarm !== snapshot) {
+            const changed = owner.healthAlarm !== null;
+            const delivered = await sendWake(owner, `${health}${changed ? "\nWorker status changed during the monitoring outage." : ""}\nInspect current open decisions and unread status even if the queue is empty; notify the user of finished work and blockers. Do not infer recovery from arm-child occupancy.`);
+            if (delivered) owner.healthAlarm = snapshot;
+          }
+        }
+      } catch {
+        // A rejected follow-up is not an acknowledgement: retry next tick.
+      } finally {
+        if (owner.healthTimer === timer) owner.healthTimer = null;
+        if (generationIsLive(owner) && lockOwnership() === "owned") observeHealth(owner);
+      }
+    }, healthPollMs);
+    timer.unref();
+    owner.healthTimer = timer;
+  }
+
+  async function explicitArm(owner: SessionGeneration): Promise<ArmResult> {
+    if (generationIsLive(owner) && lockOwnership() === "owned" && owner.child) {
+      observeHealth(owner);
+      const child = owner.child;
+      const health = await cycleHealth(owner);
+      if (!generationIsLive(owner)) return { ok: false, message: shuttingDownMessage };
+      if (owner.child === child && health !== "healthy") {
+        return { ok: false, message: health === "starting"
+          ? "watcher: unconfirmed - arm child is still starting; health is not yet verified"
+          : health };
+      }
+    }
+    return startArm(owner);
+  }
+
   function startArm(owner: SessionGeneration, predecessorArmPid = ""): ArmResult {
     if (!generationIsLive(owner)) return { ok: false, message: shuttingDownMessage };
     const ownership = lockOwnership();
@@ -449,6 +565,7 @@ export default function (pi: ExtensionAPI) {
       };
     }
     markLoaded();
+    observeHealth(owner);
     if (owner.child) {
       return {
         ok: true,
@@ -476,6 +593,7 @@ export default function (pi: ExtensionAPI) {
       stdio: ["ignore", "pipe", "pipe"],
     });
     owner.child = armChild;
+    armStartedAt.set(armChild, Date.now());
     let stdout = "";
     let stderr = "";
     let settled = false;
@@ -493,6 +611,7 @@ export default function (pi: ExtensionAPI) {
     const settleReadiness = (ready: boolean): void => {
       if (readinessSettled) return;
       readinessSettled = true;
+      if (ready) armEstablished.add(armChild);
       resolveReadiness(ready);
     };
     const observeEstablishedArm = (): void => {
@@ -573,7 +692,7 @@ export default function (pi: ExtensionAPI) {
   pi.registerCommand?.("fm-watch-arm-pi", {
     description: "Arm firstmate watcher supervision through the Pi extension instead of foreground bash.",
     handler: async (_args, ctx) => {
-      const result = startArm(generation);
+      const result = await explicitArm(generation);
       ctx.ui.notify(result.message, result.ok ? "info" : "warning");
     },
   });
@@ -614,7 +733,7 @@ export default function (pi: ExtensionAPI) {
       return new Container();
     },
     execute: async () => {
-      const result = startArm(generation);
+      const result = await explicitArm(generation);
       return {
         content: [{ type: "text", text: result.message }],
         details: result,

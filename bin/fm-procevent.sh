@@ -27,6 +27,9 @@
 #            republish every durably captured result with no handled
 #            acknowledgement yet - regardless of any earlier publication - and
 #            start a runner for any registered source that has no live owner.
+#            Contended source locks are deferred without consuming results or
+#            waiting, so optional reconciliation cannot stall worker-status scans.
+#            Explicit mutations retain waiting locks.
 #            This is liveness repair only - it never discovers results by
 #            polling the source, because the child blocks on the source itself.
 # handled    Durably and idempotently record that a captured result has been
@@ -135,7 +138,10 @@ REG=$(fm_procevent_registry_dir "$STATE")
 MAX_OUTPUT_BYTES=${FM_PROCEVENT_MAX_OUTPUT_BYTES:-1048576}
 
 die() { printf 'error: %s\n' "$1" >&2; exit 1; }
-usage() { sed -n '2,119p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2; }
+usage() {
+  awk 'NR == 1 { next } !/^#/ { exit } { sub(/^# ?/, ""); print }' "${BASH_SOURCE[0]}"
+  exit 2
+}
 
 adapter_script() { printf '%s/bin/fm-procevent-%s.sh\n' "$FM_ROOT" "$1"; }
 
@@ -262,17 +268,22 @@ cmd_register() {
 # Publish every durably captured result with no handled acknowledgement yet.
 # Capture already happened, so this only turns durable state into durable
 # events - and it republishes on every call regardless of any earlier
-# publication, so a result stays eligible for re-announcement across restarts
+# publication when its source lock is available, so a result stays eligible
+# for re-announcement across restarts
 # and drains until `fm_procevent_mark_handled` records it.
-publish_result() {  # <result-file>
-  local result=$1 id seq adapter line status=1
+publish_result() {  # <result-file> [opportunistic]
+  local result=$1 opportunistic=${2:-0} id seq adapter line status=1
   id=$(fm_procevent_result_source_id "$result")
   seq=$(fm_procevent_result_sequence "$result")
   fm_procevent_source_id_valid "$id" || return 1
   adapter=$(fm_procevent_result_adapter "$result" 2>/dev/null || true)
   [ -n "$adapter" ] || return 1
   line=$(fm_procevent_event_line "$adapter" "$id" "$seq") || return 1
-  fm_procevent_source_lock_acquire "$id" || return 1
+  if [ "$opportunistic" = 1 ]; then
+    fm_procevent_source_lock_try_acquire "$id" || return 1
+  else
+    fm_procevent_source_lock_acquire "$id" || return 1
+  fi
   if ! fm_procevent_is_handled "$STATE" "$id" "$seq"; then
     # A result its own adapter declares a routine no-op is recorded as handled
     # and never announced, so it neither wakes a handler now nor comes back on
@@ -298,12 +309,12 @@ publish_result() {  # <result-file>
   return "$status"
 }
 
-publish_pending() {  # [result-file-to-skip]
-  local skip=${1-} result published=0
+publish_pending() {  # [result-file-to-skip] [opportunistic]
+  local skip=${1-} opportunistic=${2:-0} result published=0
   while IFS= read -r result; do
     [ -n "$result" ] || continue
     [ "$result" = "$skip" ] && continue
-    if publish_result "$result"; then
+    if publish_result "$result" "$opportunistic"; then
       published=$((published + 1))
     fi
   done < <(fm_procevent_pending "$STATE")
@@ -553,7 +564,9 @@ detach_runner() {  # <source-id>
 
 cmd_reconcile() {
   local rec id published started=0 stopped=0 uncertain=0 claim owner pid token identity claim_state stop_state
-  published=$(publish_pending)
+  # Source reconciliation is optional to the worker-status scan. Leave busy
+  # sources and their durable results untouched for the next cycle.
+  published=$(publish_pending '' 1)
 
   # Stop a runner this home owns whose source is no longer registered. Without
   # this, unregistering a source that never completes leaves its child blocked
@@ -562,7 +575,7 @@ cmd_reconcile() {
     [ -e "$claim" ] || continue
     id=${claim##*/}; id=${id%.claim}
     fm_procevent_source_id_valid "$id" || continue
-    fm_procevent_source_lock_acquire "$id" || continue
+    fm_procevent_source_lock_try_acquire "$id" || continue
     if [ -f "$(source_file "$id")" ] && [ ! -L "$(source_file "$id")" ]; then
       fm_procevent_source_lock_release "$id"
       continue
@@ -602,7 +615,7 @@ cmd_reconcile() {
       [ -e "$rec" ] || continue
       id=${rec##*/}; id=${id%.source}
       fm_procevent_source_id_valid "$id" || continue
-      fm_procevent_source_lock_acquire "$id" || continue
+      fm_procevent_source_lock_try_acquire "$id" || continue
       if [ -f "$(source_file "$id")" ] && [ ! -L "$(source_file "$id")" ]; then
         fm_procevent_claim_state_locked "$id"
         claim_state=$?

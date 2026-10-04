@@ -14,6 +14,10 @@ The attestation must bind to the current PR head commit and report the review, t
 It evaluates every PR opening and body edit independently, reruns after head synchronization or reopening, and prevents a later edit from replacing an earlier pending compliance check.
 GitHub Actions and Dependabot are exempt so their automation keeps working, but other contributor PRs that do not satisfy the attestation contract will not be reviewed or merged.
 
+If this check fails after a pipeline CI fix pushes a new head, compare the PR body's attested `head_sha` with the current PR head.
+A mismatch requires the outer no-mistakes executor to publish an updated attestation through its PR phase after the required validation for that head; rerunning the same Actions event does not refresh its body snapshot.
+An agent inside an active CI phase must report this delivery blocker to the outer executor, following the installed no-mistakes skill's active validation-step boundary, rather than start a nested pipeline, hand-edit the attestation, or weaken the head-binding check.
+
 ## Workflow
 
 1. Fork the repo, then clone the parent repo or set your local `origin` back to the parent (`git@github.com:kunchenguid/firstmate.git`).
