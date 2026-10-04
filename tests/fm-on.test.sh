@@ -11,7 +11,27 @@ TMP_ROOT=$(fm_test_tmproot fm-on)
 # and physicalize macOS's /var -> /private/var alias before transport validation.
 mkdir -p "$TMP_ROOT"
 TMP_ROOT=$(cd "$TMP_ROOT" && pwd -P)
-trap 'if [ -f "$TMP_ROOT/remote-jobs/worker.pid" ]; then kill "$(cat "$TMP_ROOT/remote-jobs/worker.pid")" 2>/dev/null || true; fi; rm -rf -- "$TMP_ROOT"' EXIT
+stop_fixture_worker() {
+  local i
+  if [ -f "$TMP_ROOT/remote-jobs/worker.pid" ]; then
+    kill -TERM "$(cat "$TMP_ROOT/remote-jobs/worker.pid")" 2>/dev/null || true
+  fi
+  # TERM starts asynchronous shutdown, which still writes under worker.lock.
+  # The worker releases that lock only after stopping its command tree.
+  for i in $(seq 1 200); do
+    if [ ! -e "$TMP_ROOT/remote-jobs/worker.pid" ] && [ ! -e "$TMP_ROOT/remote-jobs/worker.lock" ]; then
+      return 0
+    fi
+    sleep 0.05
+  done
+  printf 'not ok - fixture worker did not release ownership before cleanup\n' >&2
+  return 1
+}
+cleanup_on_fixture() {
+  stop_fixture_worker || return 1
+  fm_test_cleanup
+}
+trap cleanup_on_fixture EXIT
 LOCAL_HOME="$TMP_ROOT/local-home"
 REMOTE_ROOT="$TMP_ROOT/remote-root"
 REMOTE_HOME="$TMP_ROOT/remote-home"
@@ -216,13 +236,21 @@ MANAGER_DIRS=(
   "$ACCOUNT_HOME"/.local/share/mise/installs/*/*/bin
   "$ACCOUNT_HOME"/.mise/installs/*/*/bin
 )
-OPTIONAL_DIRS=(
+NIX_DIRS=(
   "$ACCOUNT_HOME/.nix-profile/bin"
   "/etc/profiles/per-user/$ACCOUNT_USER/bin"
   /run/current-system/sw/bin
-  /opt/homebrew/bin
-  /usr/local/bin
 )
+# The documented Nix exception resolves a final bin symlink; other optional
+# directories still reject a symlink in that position.
+OPTIONAL_DIRS=()
+for candidate in "${NIX_DIRS[@]}"; do
+  if [ -d "$candidate" ] && [ -L "$candidate" ]; then
+    candidate=$(CDPATH='' cd -- "$candidate" && pwd -P)
+  fi
+  OPTIONAL_DIRS+=("$candidate")
+done
+OPTIONAL_DIRS+=(/opt/homebrew/bin /usr/local/bin)
 EXPECTED_PATH=
 expect_dir() {
   case ":$EXPECTED_PATH:" in *":$1:"*) return 0 ;; esac
@@ -274,12 +302,7 @@ for candidate in "${MANAGER_DIRS[@]}" "${OPTIONAL_DIRS[@]}"; do
 done
 pass "the entrypoint composes a deduplicated discovered child PATH (kept $PRESENT_CHECKED existing, omitted $ABSENT_CHECKED absent)"
 
-WORKER_PID=$(cat "$TMP_ROOT/remote-jobs/worker.pid")
-kill -TERM "$WORKER_PID"
-for _ in $(seq 1 100); do
-  [ ! -f "$TMP_ROOT/remote-jobs/worker.pid" ] && break
-  sleep 0.05
-done
+stop_fixture_worker || fail "the worker did not stop for the doctor bootstrap fixture"
 assert_absent "$TMP_ROOT/remote-jobs/worker.pid" "the worker did not stop for the doctor bootstrap fixture"
 set +e
 out=$(fm_on ios fm-remote-doctor.sh 2>&1)
@@ -503,5 +526,9 @@ set -e
 [ "$(cat "$SSH_COUNT")" -eq 1 ] || fail "ambiguous completion was retried"
 [ "$(grep -c mutation "$REMOTE_HOME/mutations")" -eq 1 ] || fail "ambiguous mutation did not execute exactly once"
 pass "unreachable and ambiguous transport failures are surfaced without retry"
+
+cleanup_on_fixture || fail "fixture cleanup failed"
+assert_absent "$TMP_ROOT" "fixture cleanup left its root behind"
+pass "fixture cleanup waits for the worker to release ownership before removing its state"
 
 echo "ALL TESTS PASSED"
